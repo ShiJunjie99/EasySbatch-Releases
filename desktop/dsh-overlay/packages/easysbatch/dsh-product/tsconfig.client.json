@@ -9,6 +9,7 @@
   "references": [
     { "path": "../../../vendor/cordis" },
     { "path": "../../api/remotes/tsconfig.client.json" },
+    { "path": "../../client/ui-conversation" },
     { "path": "../../client/ui-layout" },
     { "path": "../../client/ui-renderer" },
     { "path": "../../client/ui-sidebar" },
