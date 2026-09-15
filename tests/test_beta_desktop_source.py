@@ -40,6 +40,12 @@ def test_bundle_disables_telemetry_and_user_presets():
     assert "default: beta-easysbatch" in patch
 
 
+def test_desktop_patch_adds_custom_packages_to_clean_host_build():
+    patch = (ROOT / "desktop/dsh-patches/0001-beta-easysbatch-desktop.patch").read_text(encoding="utf-8")
+    assert '"./packages/easysbatch/dsh-tool"' in patch
+    assert '"./packages/easysbatch/dsh-bundle"' in patch
+
+
 def test_archive_extraction_omits_safe_symlinks_for_windows(tmp_path):
     archive = tmp_path / "source.tar.gz"
     with tarfile.open(archive, "w:gz") as target:

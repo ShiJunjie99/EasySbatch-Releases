@@ -338,3 +338,17 @@ index 9ac6dd7..2049b48 100644
 +    Beta EasySbatch
 +  </div>
  }
+diff --git a/tsconfig.host.json b/tsconfig.host.json
+index c5a3f11..5bf6b12 100644
+--- a/tsconfig.host.json
++++ b/tsconfig.host.json
+@@ -154,7 +154,9 @@
+     { "path": "./packages/util/crypto" },
+     { "path": "./packages/util/deque" },
+     { "path": "./packages/util/chunked-list" },
+     { "path": "./packages/util/values" },
++    { "path": "./packages/easysbatch/dsh-tool" },
++    { "path": "./packages/easysbatch/dsh-bundle" },
+     { "path": "./packages/util/workspace-path" },
+     { "path": "./packages/util/output-retention" },
+     { "path": "./packages/util/atomic-write" },
