@@ -46,6 +46,19 @@ def test_desktop_patch_adds_custom_packages_to_clean_host_build():
     assert '"./packages/easysbatch/dsh-bundle"' in patch
 
 
+def test_desktop_patch_skips_seed_signing_only_for_unsigned_beta_builds():
+    patch = (ROOT / "desktop/dsh-patches/0001-beta-easysbatch-desktop.patch").read_text(encoding="utf-8")
+    assert "const unsigned = process.env.BETA_EASYSBATCH_UNSIGNED === '1'" in patch
+    assert "if (targetPlatform === 'darwin' && !unsigned)" in patch
+
+
+def test_desktop_ci_matches_dsh_primary_node_runtime():
+    workflow = (ROOT / ".github/workflows/build-beta-desktop.yml").read_text(encoding="utf-8")
+    assert 'NODE_VERSION: "24.17.0"' in workflow
+    assert "actions/setup-node@v6" in workflow
+    assert "pnpm/action-setup@v6" in workflow
+
+
 def test_archive_extraction_omits_safe_symlinks_for_windows(tmp_path):
     archive = tmp_path / "source.tar.gz"
     with tarfile.open(archive, "w:gz") as target:

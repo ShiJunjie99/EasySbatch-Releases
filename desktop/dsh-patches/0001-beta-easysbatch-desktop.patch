@@ -352,3 +352,20 @@ index c5a3f11..5bf6b12 100644
      { "path": "./packages/util/workspace-path" },
      { "path": "./packages/util/output-retention" },
      { "path": "./packages/util/atomic-write" },
+diff --git a/apps/desktop/scripts/prepare-seed.ts b/apps/desktop/scripts/prepare-seed.ts
+index 73da078..d52f28d 100644
+--- a/apps/desktop/scripts/prepare-seed.ts
++++ b/apps/desktop/scripts/prepare-seed.ts
+@@ -159,10 +159,11 @@ async function main(): Promise<void> {
+     rmSync(installedModules, { recursive: true, force: true })
+     rmSync(PNPM_BUILD_STATE, { recursive: true, force: true })
+     await verifyOfflineInstallation(release)
+     const targetPlatform = process.env.DSH_DESKTOP_TARGET_PLATFORM ?? process.platform
++    const unsigned = process.env.BETA_EASYSBATCH_UNSIGNED === '1'
+     let signedMachOFiles: number | undefined
+     let macOSSigning: ReturnType<typeof resolveMacOSSigningEnvironment> | undefined
+-    if (targetPlatform === 'darwin') {
++    if (targetPlatform === 'darwin' && !unsigned) {
+       macOSSigning = resolveMacOSSigningEnvironment(process.env)
+       const signing = await signMacOSSeedStore(
+         STORE_ROOT,
