@@ -671,14 +671,20 @@ function NewTaskPanel({ ctx }: { ctx: ClientContext }) {
 
   const selectSoftware = (identifier: string) => {
     const selected = software.find(item => item.id === identifier)
-    setForm(current => selected === undefined ? { ...current, softwareId: '' } : {
-      ...current,
-      softwareId: selected.id,
-      runType: selected.runType,
-      entrypoint: selected.id,
-      executable: selected.executable,
-      environmentId: selected.environment?.id ?? current.environmentId,
-    })
+    setForm(current => ({
+      ...(selected === undefined ? { ...current, softwareId: '' } : {
+        ...current,
+        softwareId: selected.id,
+        runType: selected.runType,
+        entrypoint: selected.id,
+        executable: selected.executable,
+        environmentId: selected.environment?.id ?? current.environmentId,
+      }),
+      memoryMode: current.memoryMode === 'recommended' ? 'explicit' : current.memoryMode,
+      memoryEvidence: null,
+      walltimeMode: current.walltimeMode === 'recommended' ? 'explicit' : current.walltimeMode,
+      walltimeEvidence: null,
+    }))
     setCreated(null)
     setPreview(null)
     setPreviewRevision(null)
