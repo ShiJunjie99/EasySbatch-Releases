@@ -232,7 +232,6 @@ export function apply(ctx: Context): void {
       },
       name: {
         type: 'string',
-        required: false,
         description: 'Optional user-facing task name.',
       },
     },
