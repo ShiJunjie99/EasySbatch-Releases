@@ -3,11 +3,13 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import sys
 
 import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
 
 
 def load_script(name: str):
@@ -21,6 +23,7 @@ def load_script(name: str):
 
 VERIFY = load_script("verify_beta_release_assets")
 VALIDATE = load_script("validate_beta_release_version")
+BUILD = load_script("build_beta_desktop")
 
 
 def write_target(root: Path, target: str, version: str) -> None:
@@ -46,6 +49,24 @@ def write_target(root: Path, target: str, version: str) -> None:
 
 def test_current_beta_version_has_matching_release_identity():
     VALIDATE.validate("0.2.0-beta.1")
+
+
+def test_product_version_stamps_the_complete_dsh_release_family(tmp_path):
+    manifests = [
+        tmp_path / "package.json",
+        tmp_path / "apps/desktop/package.json",
+        tmp_path / "apps/cli/package.json",
+        tmp_path / "packages/client/ui/package.json",
+        tmp_path / "packages/easysbatch/dsh-tool/package.json",
+        tmp_path / "packages/experimental/public-tool/package.json",
+    ]
+    for index, path in enumerate(manifests):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"name": f"package-{index}", "version": "0.1.5-rc.2"}), encoding="utf-8")
+    BUILD._stamp_product_version(tmp_path, "0.2.0-beta.1")
+    assert {
+        json.loads(path.read_text(encoding="utf-8"))["version"] for path in manifests
+    } == {"0.2.0-beta.1"}
 
 
 def test_release_assets_authenticate_both_platform_updaters(tmp_path):

@@ -22,14 +22,9 @@ VERSION_PATTERN = re.compile(
     r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
     r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
 )
-VERSION_MANIFESTS = (
-    "package.json",
-    "apps/cli/package.json",
-    "apps/desktop/package.json",
-    "apps/desktop-host/package.json",
-    "packages/easysbatch/dsh-tool/package.json",
-    "packages/easysbatch/dsh-product/package.json",
-    "packages/easysbatch/dsh-bundle/package.json",
+VERSION_MANIFEST_GLOBS = (
+    "apps/*/package.json",
+    "packages/*/*/package.json",
 )
 RELEASE_ARTIFACT_SUFFIXES = (".exe", ".dmg", ".zip", ".blockmap", ".yml", ".json")
 
@@ -59,8 +54,10 @@ def _product_version(explicit: str | None) -> str:
 
 
 def _stamp_product_version(dsh: Path, version: str) -> None:
-    for relative in VERSION_MANIFESTS:
-        path = dsh / relative
+    paths = {dsh / "package.json"}
+    for pattern in VERSION_MANIFEST_GLOBS:
+        paths.update(dsh.glob(pattern))
+    for path in sorted(paths):
         manifest = json.loads(path.read_text(encoding="utf-8"))
         manifest["version"] = version
         path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
