@@ -12,9 +12,10 @@ permissions:
 
 env:
   PYTHON_VERSION: "3.11"
-  # Match DSH's primary release runtime; Node 26 can leave extract-zip's
-  # top-level await unsettled on Windows (process exit code 13).
-  NODE_VERSION: "24.17.0"
+  # DSH uses extract-zip 2.0.1 while preparing the Windows runtime. Node
+  # 24.16-24.17 has a stream regression that leaves its top-level await
+  # unsettled (exit 13); 24.18 contains the upstream stream revert.
+  NODE_VERSION: "24.18.0"
   PNPM_VERSION: "11.7.0"
   PYINSTALLER_VERSION: "6.16.0"
 
