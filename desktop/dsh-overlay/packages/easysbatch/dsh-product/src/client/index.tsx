@@ -806,7 +806,10 @@ function NewTaskPanel({ ctx }: { ctx: ClientContext }) {
         if (memory === undefined && walltime === undefined) {
           throw new Error('没有找到与当前命令和并行布局完全一致的已核验内存或时限依据。')
         }
-        setResourceEvidence({ memory, walltime })
+        setResourceEvidence({
+          ...(memory === undefined ? {} : { memory }),
+          ...(walltime === undefined ? {} : { walltime }),
+        })
         setForm(current => ({
           ...current,
           ...(memory === undefined ? {} : {
