@@ -3,3 +3,4 @@ deployment-private/** export-ignore
 *.sqlite3 export-ignore
 logs/** export-ignore
 runs/** export-ignore
+*.patch text eol=lf
