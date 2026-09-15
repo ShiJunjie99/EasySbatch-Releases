@@ -50,7 +50,15 @@ jobs:
       - name: Install build dependencies
         run: python -m pip install ".[test]" "pyinstaller==${{ env.PYINSTALLER_VERSION }}"
       - name: Build unsigned Windows test installer
-        run: python scripts/build_beta_desktop.py --target win-x64
+        run: |
+          python scripts/build_beta_desktop.py --target win-x64 2>&1 | Tee-Object -FilePath beta-desktop-build.log
+          $buildExitCode = $LASTEXITCODE
+          if ($buildExitCode -ne 0) {
+            $tail = (Get-Content beta-desktop-build.log -Tail 40) -join "`n"
+            $tail = $tail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+            Write-Output "::error title=Windows desktop build failed::$tail"
+            exit $buildExitCode
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: Beta-EasySbatch-Windows-x64-unsigned
@@ -77,7 +85,16 @@ jobs:
       - name: Install build dependencies
         run: python -m pip install ".[test]" "pyinstaller==${PYINSTALLER_VERSION}"
       - name: Build unsigned Apple Silicon test application
-        run: python scripts/build_beta_desktop.py --target mac-arm64
+        run: |
+          set +e
+          python scripts/build_beta_desktop.py --target mac-arm64 2>&1 | tee beta-desktop-build.log
+          build_exit_code=${PIPESTATUS[0]}
+          set -e
+          if [ "$build_exit_code" -ne 0 ]; then
+            escaped_tail="$(tail -n 40 beta-desktop-build.log | python -c 'import sys; print(sys.stdin.read().replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A"), end="")')"
+            echo "::error title=macOS desktop build failed::$escaped_tail"
+            exit "$build_exit_code"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: Beta-EasySbatch-macOS-arm64-unsigned
