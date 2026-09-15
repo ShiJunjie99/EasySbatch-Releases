@@ -134,6 +134,46 @@ def test_desktop_patch_skips_seed_signing_only_for_unsigned_beta_builds():
     assert "if (targetPlatform === 'darwin' && !unsigned)" in patch
 
 
+def test_signed_beta_uses_explicit_public_github_update_channel():
+    patch = (ROOT / "desktop/dsh-patches/0001-beta-easysbatch-desktop.patch").read_text(
+        encoding="utf-8"
+    )
+    update_patch = (ROOT / "desktop/dsh-patches/0002-beta-auto-update-channel.patch").read_text(
+        encoding="utf-8"
+    )
+    build = (ROOT / "scripts/build_beta_desktop.py").read_text(encoding="utf-8")
+    assert "provider: 'github'" in patch
+    assert "owner: 'ShiJunjie99'" in patch
+    assert "repo: 'EasySbatch-Releases'" in patch
+    assert "channel: 'beta'" in patch
+    assert "app-update.yml" in patch
+    assert "allowPrerelease = true" in update_patch
+    assert "this.updater.channel = 'beta'" in update_patch
+    assert 'DEFAULT_PRODUCT_VERSION = "0.2.0-beta.1"' in build
+    assert "GITHUB_REF_TYPE" in build and "GITHUB_REF_NAME" in build
+
+
+def test_formal_beta_release_requires_native_signatures_and_no_unsigned_fallback():
+    workflow = (ROOT / ".github/workflows/publish-beta-release.yml").read_text(encoding="utf-8")
+    signing_patch = (ROOT / "desktop/dsh-patches/0003-beta-windows-pfx-signing.patch").read_text(
+        encoding="utf-8"
+    )
+    build = (ROOT / "scripts/build_beta_desktop.py").read_text(encoding="utf-8")
+    assert "environment: production-release" in workflow
+    assert "WINDOWS_CERTIFICATE_PFX_BASE64" in workflow
+    assert "MACOS_CERTIFICATE_P12_BASE64" in workflow
+    assert "APPLE_API_KEY_P8_BASE64" in workflow
+    assert "Get-AuthenticodeSignature" in workflow
+    assert "xcrun stapler validate" in workflow
+    assert "actions/attest-build-provenance@v3" in workflow
+    assert "--signed" in workflow
+    assert "-unsigned" not in workflow
+    assert "VERIFIED_BUILD_RUN_ID" not in workflow
+    assert "WIN_CSC_LINK" in signing_patch
+    assert "WIN_CSC_KEY_PASSWORD" in signing_patch
+    assert "PFX Windows signing" in build
+
+
 def test_desktop_ci_matches_dsh_primary_node_runtime():
     workflow = (ROOT / ".github/workflows/build-beta-desktop.yml").read_text(encoding="utf-8")
     readme = (ROOT / "desktop/README.md").read_text(encoding="utf-8")
@@ -141,6 +181,19 @@ def test_desktop_ci_matches_dsh_primary_node_runtime():
     assert "Node 24.18.0" in readme
     assert "actions/setup-node@v6" in workflow
     assert "pnpm/action-setup@v6" in workflow
+
+
+def test_desktop_packages_use_cloud_only_size_reporting_and_maximum_compression():
+    workflow = (ROOT / ".github/workflows/build-beta-desktop.yml").read_text(encoding="utf-8")
+    size_patch = (ROOT / "desktop/dsh-patches/0004-beta-package-size.patch").read_text(encoding="utf-8")
+    build = (ROOT / "scripts/build_beta_desktop.py").read_text(encoding="utf-8")
+    assert "report_beta_desktop_size.py" in workflow
+    assert "GITHUB_STEP_SUMMARY" in workflow
+    assert "\n          path: dist/beta-easysbatch/win-x64/*\n" not in workflow
+    assert "\n          path: dist/beta-easysbatch/mac-arm64/*\n" not in workflow
+    assert "compression: 'maximum'" in size_patch
+    assert "_copy_release_artifacts" in build
+    assert "shutil.copytree(upstream_artifacts" not in build
 
 
 def test_archive_extraction_omits_safe_symlinks_for_windows(tmp_path):

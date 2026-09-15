@@ -1,0 +1,11 @@
+diff --git a/apps/desktop/electron-builder.config.mjs b/apps/desktop/electron-builder.config.mjs
+--- a/apps/desktop/electron-builder.config.mjs
++++ b/apps/desktop/electron-builder.config.mjs
+@@ -55,6 +55,7 @@ export function createElectronBuilderConfig(
+     productName: 'Beta EasySbatch',
+     artifactName: 'Beta-EasySbatch-${version}-${os}-${arch}.${ext}',
+     directories: { output: buildPaths.artifacts },
++    compression: 'maximum',
+     asar: true,
+     files: [
+       'lib/*.js',

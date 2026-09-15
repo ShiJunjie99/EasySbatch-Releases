@@ -192,6 +192,14 @@ export class EasySbatchDesktop extends TypertRemoteService {
     return result
   }
 
+  @Remote('forgetCluster')
+  async forgetCluster(signal: AbortSignal): Promise<JsonValue> {
+    clearSessionPassword()
+    return await callCore('forget_cluster', {
+      cluster_config_path: paths().clusterConfigPath,
+    }, signal)
+  }
+
   @Remote('inspectSshHostKey')
   inspectSshHostKey(host: string, sshPort: number, signal: AbortSignal): Promise<JsonValue> {
     return callCore('inspect_ssh_host_key', { host, ssh_port: sshPort }, signal)

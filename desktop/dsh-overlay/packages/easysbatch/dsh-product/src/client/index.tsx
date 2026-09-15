@@ -32,6 +32,8 @@ interface RuntimeView {
   readonly clusterPort?: number
   readonly clusterUsername?: string
   readonly trustedFingerprint?: string
+  readonly credentialSaved: boolean
+  readonly credentialBackend: string
 }
 
 interface JobView {
@@ -178,6 +180,8 @@ function runtimeOf(value: unknown): RuntimeView {
     submissionEnabled: row.submission_enabled === true,
     catalogConfigured: row.catalog_configured === true,
     profileSource: optionalString(row.profile_source),
+    credentialSaved: row.credential_saved === true,
+    credentialBackend: string(row.credential_backend, 'Unavailable'),
     ...(cluster === undefined ? {} : {
       clusterLabel: `${string(cluster.display_name, '计算集群')} · ${string(cluster.username)}`,
       clusterHost: string(cluster.host),
@@ -1295,6 +1299,28 @@ function ClusterPanel({ ctx }: { ctx: ClientContext }) {
     setSaving(false)
     await load()
   }
+  const forget = async () => {
+    if (!window.confirm('确定要忘记这个服务器账户吗？保存的 SSH 密码和连接信息都会被清除。')) return
+    setSaving(true)
+    setError(null)
+    const result = await ctx.remote.easySbatch.forgetCluster()
+    if (!result.ok) {
+      setError(result.error.message)
+      setSaving(false)
+      return
+    }
+    setSnapshot(null)
+    setProfileSource(null)
+    setDisplayName('学校计算集群')
+    setHost('')
+    setPort('3088')
+    setUsername('')
+    setPassword('')
+    setTrustedEndpoint(null)
+    setTrustedFingerprint(null)
+    setError('尚未配置计算集群。')
+    setSaving(false)
+  }
   const metrics = useMemo(() => snapshot === null ? [] : [
     ['可见节点', snapshot.totalNodes], ['空闲节点', snapshot.idleNodes],
     ['空闲 CPU', snapshot.idleCpus], ['排队任务', snapshot.pendingJobs],
@@ -1319,11 +1345,11 @@ function ClusterPanel({ ctx }: { ctx: ClientContext }) {
             {saving ? '正在安全连接…' : '登录并连接'}
           </button>
         </div>
-        <small>服务器 IP 为 10.158.132.77 且 SSH 端口为 3088 时，会套用已审核的共享环境；其他服务器使用安全默认环境，并从 Slurm 实时读取计算资源。密码仅保留在本次软件会话中，退出后清除。</small>
+        <small>服务器 IP 为 10.158.132.77 且 SSH 端口为 3088 时，会套用已审核的共享环境。登录成功后，密码由 Windows Credential Manager 或 macOS Keychain 安全保存；下次打开会读取上次账户并自动重连。</small>
       </div>}
       {snapshot !== null && (
         <>
-          <div className={`${css.connection} ${css.connected}`}><span className={css.dot} />{profileSourceLabel(profileSource)}</div>
+          <div className={`${css.connection} ${css.connected}`}><span className={css.dot} />{profileSourceLabel(profileSource)}<button type="button" className={css.textButton} disabled={saving} onClick={() => { void forget() }}>忘记此账户</button></div>
           <div className={css.clusterTitle}><div><h2>{snapshot.name}</h2><p>{snapshot.user} · {date(snapshot.capturedAt)}</p></div><span className={`${css.badge} ${css.good}`}>已连接</span></div>
           <div className={css.metrics}>{metrics.map(([label, value]) => <Metric key={label} label={label} value={value} />)}</div>
           <section className={css.partitionSection}>

@@ -52,6 +52,9 @@ from .service import (
 )
 from .slurm import SlurmClient, resolve_log_path
 from .smart_models import PreparationValues
+from .ssh_credential_store import (
+    SSHCredentialStoreError, create_ssh_credential_store,
+)
 
 
 PRODUCT_NAME = "Beta EasySbatch"
@@ -298,6 +301,11 @@ def _load_cluster_runner(
         _load_cluster_configuration(path_value)
     )
     password = _REQUEST_PASSWORD.get()
+    if password is None and host_key is not None:
+        try:
+            password = create_ssh_credential_store().get(profile, username)
+        except SSHCredentialStoreError:
+            password = None
     if host_key is None or password is None:
         raise SidecarError(
             "SSH_AUTH_REQUIRED",
@@ -342,6 +350,22 @@ def _write_private_json(path_value: object, value: object) -> None:
         raise SidecarError(
             "CLUSTER_CONFIG_UNAVAILABLE",
             "The desktop cluster configuration could not be saved",
+        ) from None
+
+
+def _remove_private_file(path_value: object, *, label: str) -> bool:
+    path = _absolute_path(path_value, label=label)
+    try:
+        if not path.exists() and not path.is_symlink():
+            return False
+        if path.is_dir() and not path.is_symlink():
+            raise OSError("owned file path is a directory")
+        path.unlink()
+        return True
+    except OSError:
+        raise SidecarError(
+            "CLUSTER_CONFIG_UNAVAILABLE",
+            "The desktop cluster configuration could not be removed",
         ) from None
 
 
@@ -798,6 +822,7 @@ def dispatch(method: str, params: object) -> dict[str, object]:
                 "scan_project", "scan_remote_project", "active_remote_scan",
                 "validate_job", "render_job", "review_job", "list_profiles", "list_catalog",
                 "inspect_ssh_host_key", "connect_cluster", "configure_cluster",
+                "forget_cluster",
                 "cluster_snapshot", "recommend_job", "create_job", "list_jobs",
                 "get_job", "submit_job", "refresh_job",
                 "browse_remote_directory",
@@ -818,10 +843,19 @@ def dispatch(method: str, params: object) -> dict[str, object]:
         expected_profiles = None
         expected_catalog = None
         trusted_host_key = None
+        credential_backend = "Unavailable"
+        saved_password = None
         try:
             cluster, username, expected_profiles, expected_catalog, trusted_host_key = _load_cluster_configuration(
                 values["cluster_config_path"],
             )
+            credential_store = create_ssh_credential_store()
+            credential_backend = credential_store.backend.value
+            if trusted_host_key is not None:
+                try:
+                    saved_password = credential_store.get(cluster, username)
+                except SSHCredentialStoreError:
+                    saved_password = None
         except SidecarError as exc:
             username = None
             problems.append(str(exc))
@@ -849,12 +883,18 @@ def dispatch(method: str, params: object) -> dict[str, object]:
             "catalog_configured": catalog is not None,
             "submission_enabled": (
                 cluster is not None and profiles is not None
-                and trusted_host_key is not None and _REQUEST_PASSWORD.get() is not None
+                and trusted_host_key is not None
+                and (_REQUEST_PASSWORD.get() is not None or saved_password is not None)
             ),
             "authentication_required": (
                 cluster is not None
-                and (trusted_host_key is None or _REQUEST_PASSWORD.get() is None)
+                and (
+                    trusted_host_key is None
+                    or (_REQUEST_PASSWORD.get() is None and saved_password is None)
+                )
             ),
+            "credential_saved": saved_password is not None,
+            "credential_backend": credential_backend,
             "cluster": None if cluster is None else {
                 "id": cluster.id,
                 "display_name": cluster.display_name,
@@ -952,10 +992,20 @@ def dispatch(method: str, params: object) -> dict[str, object]:
             "catalog_sha256": catalog_fingerprint,
             "host_key": host_key.to_mapping(),
         })
+        password_stored = False
+        credential_backend = "Unavailable"
+        try:
+            credential_store = create_ssh_credential_store()
+            credential_backend = credential_store.backend.value
+            credential_store.set(profile, username, password.get_secret_value())
+            password_stored = True
+        except SSHCredentialStoreError:
+            pass
         return {
             "saved": True,
             "cluster": {**profile.to_mapping(), "username": username},
-            "password_stored": False,
+            "password_stored": password_stored,
+            "credential_backend": credential_backend,
             "host_key": {
                 "algorithm": host_key.algorithm,
                 "fingerprint": host_key.fingerprint,
@@ -963,6 +1013,21 @@ def dispatch(method: str, params: object) -> dict[str, object]:
             "profile_source": source,
             "catalog_source": catalog_mode,
             "snapshot": _snapshot_view(snapshot),
+        }
+    if method == "forget_cluster":
+        values = _exact_params(params, {"cluster_config_path"})
+        credential_deleted = False
+        try:
+            credential_deleted = create_ssh_credential_store().delete()
+        except SSHCredentialStoreError:
+            pass
+        configuration_deleted = _remove_private_file(
+            values["cluster_config_path"], label="cluster_config_path",
+        )
+        return {
+            "forgotten": True,
+            "credential_deleted": credential_deleted,
+            "configuration_deleted": configuration_deleted,
         }
     if method == "configure_cluster":
         values = _exact_params(

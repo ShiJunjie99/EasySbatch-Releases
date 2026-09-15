@@ -7,6 +7,7 @@ import sys
 from datetime import datetime, timezone
 
 import yaml
+from pydantic import SecretStr
 
 from sbatch_agent.desktop_sidecar import PROTOCOL_VERSION, dispatch, handle_request, run_stream
 from sbatch_agent.cluster_models import ClusterSnapshot
@@ -32,6 +33,7 @@ def test_health_is_explicitly_non_submitting():
     assert "render_job" in result["capabilities"]
     assert "recommend_job" in result["capabilities"]
     assert "submit_job" in result["capabilities"]
+    assert "forget_cluster" in result["capabilities"]
 
 
 def test_scan_is_bounded_and_returns_current_project_evidence(tmp_path):
@@ -257,6 +259,21 @@ def test_in_app_password_login_saves_no_password_and_selects_exact_endpoint(
     }
     captured = {}
 
+    class CredentialStore:
+        class Backend:
+            value = "Windows Credential Manager"
+
+        backend = Backend()
+
+        def set(self, profile, username, password):
+            captured["stored_identity"] = (profile.host, profile.ssh_port, username)
+            captured["stored_password"] = password
+
+    monkeypatch.setattr(
+        "sbatch_agent.desktop_sidecar.create_ssh_credential_store",
+        CredentialStore,
+    )
+
     class PasswordRunner:
         def __init__(self, *, profile, username, password, host_key):
             captured["endpoint"] = (profile.host, profile.ssh_port)
@@ -296,16 +313,95 @@ def test_in_app_password_login_saves_no_password_and_selects_exact_endpoint(
     }) | {"authentication": {"password": secret}})
     assert "error" not in response
     assert response["result"]["profile_source"] == "known_cluster"
-    assert response["result"]["password_stored"] is False
+    assert response["result"]["password_stored"] is True
+    assert response["result"]["credential_backend"] == "Windows Credential Manager"
     assert captured == {
         "endpoint": ("10.158.132.77", 3088), "username": "student",
         "password": secret, "fingerprint": host_key["fingerprint"],
         "connected": True, "closed": True,
+        "stored_identity": ("10.158.132.77", 3088, "student"),
+        "stored_password": secret,
     }
     stored_text = (tmp_path / "cluster.json").read_text(encoding="utf-8")
     assert secret not in stored_text
     assert secret not in json.dumps(response)
     assert json.loads(stored_text)["host_key"]["fingerprint"] == host_key["fingerprint"]
+
+
+def test_saved_native_credential_enables_runtime_and_cluster_runner(tmp_path, monkeypatch):
+    profiles = tmp_path / "profiles.yaml"
+    catalog = tmp_path / "catalog.yaml"
+    cluster = tmp_path / "cluster.json"
+    dispatch("configure_cluster", {
+        "cluster_config_path": str(cluster),
+        "profiles_path": str(profiles),
+        "catalog_path": str(catalog),
+        "profile": {
+            "id": "primary", "display_name": "Known cluster",
+            "host": "10.158.132.77", "ssh_port": 3088,
+        },
+        "username": "student",
+    })
+    raw_key = b"synthetic-server-public-key"
+    stored = json.loads(cluster.read_text(encoding="utf-8"))
+    stored["host_key"] = {
+        "algorithm": "ssh-ed25519",
+        "public_key": base64.b64encode(raw_key).decode("ascii"),
+        "fingerprint": "SHA256:" + base64.b64encode(
+            hashlib.sha256(raw_key).digest(),
+        ).decode("ascii").rstrip("="),
+    }
+    cluster.write_text(json.dumps(stored), encoding="utf-8")
+
+    class CredentialStore:
+        class Backend:
+            value = "Windows Credential Manager"
+
+        backend = Backend()
+
+        def get(self, profile, username):
+            assert (profile.host, profile.ssh_port, username) == (
+                "10.158.132.77", 3088, "student",
+            )
+            return SecretStr("saved-password")
+
+    monkeypatch.setattr(
+        "sbatch_agent.desktop_sidecar.create_ssh_credential_store",
+        CredentialStore,
+    )
+    status = dispatch("runtime_status", {
+        "cluster_config_path": str(cluster),
+        "profiles_path": str(profiles),
+        "catalog_path": str(catalog),
+    })
+    assert status["credential_saved"] is True
+    assert status["credential_backend"] == "Windows Credential Manager"
+    assert status["submission_enabled"] is True
+    assert status["authentication_required"] is False
+
+
+def test_forget_cluster_removes_configuration_and_native_credential(tmp_path, monkeypatch):
+    cluster = tmp_path / "cluster.json"
+    cluster.write_text("{}", encoding="utf-8")
+    deleted = []
+
+    class CredentialStore:
+        def delete(self):
+            deleted.append(True)
+            return True
+
+    monkeypatch.setattr(
+        "sbatch_agent.desktop_sidecar.create_ssh_credential_store",
+        CredentialStore,
+    )
+    result = dispatch("forget_cluster", {"cluster_config_path": str(cluster)})
+    assert result == {
+        "forgotten": True,
+        "credential_deleted": True,
+        "configuration_deleted": True,
+    }
+    assert deleted == [True]
+    assert not cluster.exists()
 
 
 def test_runtime_status_reports_missing_first_run_configuration(tmp_path):

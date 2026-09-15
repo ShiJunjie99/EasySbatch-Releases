@@ -1,0 +1,11 @@
+diff --git a/apps/desktop/src/update-coordinator.ts b/apps/desktop/src/update-coordinator.ts
+--- a/apps/desktop/src/update-coordinator.ts
++++ b/apps/desktop/src/update-coordinator.ts
+@@ -31,5 +31,7 @@ export class DesktopUpdateCoordinator {
+     this.updater.autoDownload = false
+     this.updater.autoInstallOnAppQuit = false
++    this.updater.allowPrerelease = true
++    this.updater.channel = 'beta'
+   }
+ 
+   /** Check the configured Desktop release stream and retain an available version. */

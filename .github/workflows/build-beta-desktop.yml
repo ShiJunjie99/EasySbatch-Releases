@@ -60,10 +60,30 @@ jobs:
             python scripts/emit_ci_build_failure.py beta-desktop-build.log --title "Windows desktop build failed"
             exit $buildExitCode
           }
+      - name: Report Windows package size
+        shell: pwsh
+        run: |
+          python scripts/report_beta_desktop_size.py `
+            --target win-x64 `
+            --target-root build/beta-easysbatch/dsh/apps/desktop/.desktop-build/targets/win-x64 `
+            --artifacts-root dist/beta-easysbatch/win-x64 `
+            --json-out reports/beta-desktop/win-x64.json `
+            --markdown-out reports/beta-desktop/win-x64.md
+          Get-Content reports/beta-desktop/win-x64.md | Add-Content -Path $env:GITHUB_STEP_SUMMARY
       - uses: actions/upload-artifact@v4
         with:
           name: Beta-EasySbatch-Windows-x64-unsigned
-          path: dist/beta-easysbatch/win-x64/*
+          path: |
+            dist/beta-easysbatch/win-x64/*.exe
+            dist/beta-easysbatch/win-x64/*.yml
+            dist/beta-easysbatch/win-x64/*.blockmap
+            dist/beta-easysbatch/win-x64/*-release.json
+          if-no-files-found: error
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Beta-EasySbatch-Windows-x64-size-report
+          path: reports/beta-desktop/win-x64.*
           if-no-files-found: error
 
   macos-arm64:
@@ -95,8 +115,28 @@ jobs:
             python scripts/emit_ci_build_failure.py beta-desktop-build.log --title "macOS desktop build failed"
             exit "$build_exit_code"
           fi
+      - name: Report Apple Silicon package size
+        run: |
+          python scripts/report_beta_desktop_size.py \
+            --target mac-arm64 \
+            --target-root build/beta-easysbatch/dsh/apps/desktop/.desktop-build/targets/mac-arm64 \
+            --artifacts-root dist/beta-easysbatch/mac-arm64 \
+            --json-out reports/beta-desktop/mac-arm64.json \
+            --markdown-out reports/beta-desktop/mac-arm64.md
+          cat reports/beta-desktop/mac-arm64.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: Beta-EasySbatch-macOS-arm64-unsigned
-          path: dist/beta-easysbatch/mac-arm64/*
+          path: |
+            dist/beta-easysbatch/mac-arm64/*.dmg
+            dist/beta-easysbatch/mac-arm64/*.zip
+            dist/beta-easysbatch/mac-arm64/*.blockmap
+            dist/beta-easysbatch/mac-arm64/*.yml
+            dist/beta-easysbatch/mac-arm64/*-release.json
+          if-no-files-found: error
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Beta-EasySbatch-macOS-arm64-size-report
+          path: reports/beta-desktop/mac-arm64.*
           if-no-files-found: error

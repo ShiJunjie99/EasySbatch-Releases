@@ -97,12 +97,18 @@ index c47bd6d..a448392 100644
        signtoolOptions: {
          sign: windowsSigner,
          signingHashAlgorithms: ['sha256'],
-@@ -102,7 +110,7 @@ export function createElectronBuilderConfig(
+@@ -102,7 +110,13 @@ export function createElectronBuilderConfig(
        allowToChangeInstallationDirectory: true,
        differentialPackage: true,
      },
 -    publish: [{ provider: 'generic', url: update.publicUrl }],
-+    publish: unsigned ? undefined : [{ provider: 'generic', url: update.publicUrl }],
++    publish: unsigned ? undefined : [{
++      provider: 'github',
++      owner: 'ShiJunjie99',
++      repo: 'EasySbatch-Releases',
++      channel: 'beta',
++      releaseType: 'prerelease',
++    }],
    }
  }
 
@@ -192,10 +198,11 @@ diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
 index 8bc9fdc..ac043f8 100644
 --- a/apps/desktop/src/main.ts
 +++ b/apps/desktop/src/main.ts
-@@ -1,7 +1,7 @@
+@@ -1,7 +1,8 @@
  /** Electron shell: desktop project ownership, custom protocol, windows, and lifecycle. */
 
  import { readFile, writeFile } from 'node:fs/promises'
++import { existsSync } from 'node:fs'
 -import { extname, join, normalize, resolve, sep } from 'node:path'
 +import { extname, isAbsolute, join, normalize, resolve, sep } from 'node:path'
  import { fileURLToPath } from 'node:url'
@@ -206,7 +213,7 @@ index 8bc9fdc..ac043f8 100644
 
  const SCHEME = 'dsh-app'
 +const PLUGIN_MANAGEMENT_ENABLED = false
-+const UPDATES_ENABLED = process.env.BETA_EASYSBATCH_ENABLE_UPDATES === '1'
++const UPDATES_ENABLED = app.isPackaged && existsSync(join(process.resourcesPath, 'app-update.yml'))
  let focusPrimaryWindow = (): void => {}
 
  function errorOf(reason: unknown, fallback: string): Error {
