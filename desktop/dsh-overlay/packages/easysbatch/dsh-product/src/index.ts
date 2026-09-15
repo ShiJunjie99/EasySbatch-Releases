@@ -64,6 +64,7 @@ export class EasySbatchDesktop extends TypertRemoteService {
   ): Promise<JsonValue> {
     return callCore('configure_cluster', {
       cluster_config_path: paths().clusterConfigPath,
+      profiles_path: paths().profilesPath,
       profile: { id, display_name: displayName, host, ssh_port: sshPort },
       username,
     }, signal)

@@ -22,6 +22,7 @@ interface RuntimeView {
   readonly clusterConfigured: boolean
   readonly profilesConfigured: boolean
   readonly submissionEnabled: boolean
+  readonly profileSource: string | null
   readonly clusterLabel?: string
 }
 
@@ -82,10 +83,18 @@ function runtimeOf(value: unknown): RuntimeView {
     clusterConfigured: row.cluster_configured === true,
     profilesConfigured: row.profiles_configured === true,
     submissionEnabled: row.submission_enabled === true,
+    profileSource: optionalString(row.profile_source),
     ...(cluster === undefined ? {} : {
       clusterLabel: `${string(cluster.display_name, '计算集群')} · ${string(cluster.username)}`,
     }),
   }
+}
+
+function profileSourceLabel(value: string | null | undefined): string {
+  if (value === 'known_cluster') return '已自动套用此服务器的共享环境配置'
+  if (value === 'cluster_discovery') return '使用不带猜测命令的集群默认环境；计算资源按需从 Slurm 实时读取'
+  if (value === 'custom') return '正在使用自定义环境配置'
+  return '环境配置已就绪'
 }
 
 function jobOf(value: unknown): JobView {
@@ -315,9 +324,9 @@ function JobsPanel({ ctx }: { ctx: ClientContext }) {
       <div className={`${css.connection} ${runtime?.submissionEnabled === true ? css.connected : ''}`}>
         <span className={css.dot} />
         {runtime?.submissionEnabled === true
-          ? `提交配置就绪：${runtime.clusterLabel ?? '计算集群'}`
+          ? `提交配置就绪：${runtime.clusterLabel ?? '计算集群'} · ${profileSourceLabel(runtime.profileSource)}`
           : runtime?.clusterConfigured === true
-            ? '集群连接信息已保存，但缺少管理员审核的 profiles.yaml，暂不能推荐或提交。'
+            ? '集群连接信息已保存，但自动环境配置不可用，暂不能推荐或提交。'
             : '集群尚未配置：可以准备和审核任务，暂不能提交。'}
       </div>
       {error !== null && <div className={css.error} role="alert">{error}</div>}
@@ -341,6 +350,7 @@ function JobsPanel({ ctx }: { ctx: ClientContext }) {
 
 function ClusterPanel({ ctx }: { ctx: ClientContext }) {
   const [snapshot, setSnapshot] = useState<ClusterView | null>(null)
+  const [profileSource, setProfileSource] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -351,9 +361,13 @@ function ClusterPanel({ ctx }: { ctx: ClientContext }) {
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
-    const result = await ctx.remote.easySbatch.clusterSnapshot()
+    const [result, runtime] = await Promise.all([
+      ctx.remote.easySbatch.clusterSnapshot(),
+      ctx.remote.easySbatch.runtimeStatus(),
+    ])
     if (result.ok) setSnapshot(clusterOf(result.value))
     else setError(result.error.message)
+    if (runtime.ok) setProfileSource(runtimeOf(runtime.value).profileSource)
     setLoading(false)
   }, [ctx])
   useEffect(() => { void load() }, [])
@@ -370,6 +384,7 @@ function ClusterPanel({ ctx }: { ctx: ClientContext }) {
       setSaving(false)
       return
     }
+    setProfileSource(optionalString(object(result.value).profile_source))
     setSaving(false)
     await load()
   }
@@ -393,13 +408,14 @@ function ClusterPanel({ ctx }: { ctx: ClientContext }) {
           <label><span>SSH 端口</span><input value={port} inputMode="numeric" onChange={event => { setPort(event.target.value) }} /></label>
           <label><span>Linux 用户名</span><input value={username} autoComplete="username" onChange={event => { setUsername(event.target.value) }} /></label>
           <button type="button" className={css.primary} disabled={saving || host.trim() === '' || username.trim() === ''} onClick={() => { void configure() }}>
-            {saving ? '正在保存…' : '保存并测试连接'}
+            {saving ? '正在自动配置…' : '保存、自动配置并测试'}
           </button>
         </div>
-        <small>Beta 使用系统 OpenSSH 与本机 ssh-agent，不保存集群密码或私钥。首次连接前请在系统终端确认主机指纹。</small>
+        <small>连接 10.158.132.77 时会套用已审核的共享环境；其他服务器使用安全默认环境，并从 Slurm 实时读取计算资源。Beta 不保存集群密码或私钥。</small>
       </div>}
       {snapshot !== null && (
         <>
+          <div className={`${css.connection} ${css.connected}`}><span className={css.dot} />{profileSourceLabel(profileSource)}</div>
           <div className={css.clusterTitle}><div><h2>{snapshot.name}</h2><p>{snapshot.user} · {date(snapshot.capturedAt)}</p></div><span className={`${css.badge} ${css.good}`}>已连接</span></div>
           <div className={css.metrics}>{metrics.map(([label, value]) => <Metric key={label} label={label} value={value} />)}</div>
           <section className={css.partitionSection}>

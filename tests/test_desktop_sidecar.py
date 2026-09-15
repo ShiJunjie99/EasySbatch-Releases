@@ -159,10 +159,10 @@ def test_submit_requires_exact_user_confirmation_before_cluster_access(tmp_path)
 
 def test_cluster_configuration_contains_no_credentials_and_enables_runtime_metadata(tmp_path):
     profiles = tmp_path / "profiles.yaml"
-    profiles.write_text("environments: []\nlaunchers: []\n", encoding="utf-8")
     cluster = tmp_path / "state" / "cluster.json"
     saved = dispatch("configure_cluster", {
         "cluster_config_path": str(cluster),
+        "profiles_path": str(profiles),
         "profile": {
             "id": "primary",
             "display_name": "Synthetic cluster",
@@ -172,8 +172,85 @@ def test_cluster_configuration_contains_no_credentials_and_enables_runtime_metad
         "username": "student",
     })
     assert saved["credentials_stored"] is False
+    assert saved["profile_source"] == "cluster_discovery"
+    assert saved["profile_counts"] == {"environments": 1, "launchers": 0}
+    assert yaml.safe_load(profiles.read_text(encoding="utf-8")) == {
+        "environments": [{
+            "id": "cluster-default",
+            "version": "1",
+            "load_steps": [],
+            "allowed_partitions": None,
+            "resource_options": [],
+            "analysis_capabilities": None,
+            "resource_rules": [],
+        }],
+        "launchers": [],
+    }
     stored = json.loads(cluster.read_text(encoding="utf-8"))
-    assert stored == {
+    assert stored["profile"] == {
+        "id": "primary",
+        "display_name": "Synthetic cluster",
+        "host": "cluster.example.edu",
+        "ssh_port": 22,
+    }
+    assert stored["username"] == "student"
+    assert len(stored["profiles_sha256"]) == 64
+    int(stored["profiles_sha256"], 16)
+    status = dispatch("runtime_status", {
+        "cluster_config_path": str(cluster),
+        "profiles_path": str(profiles),
+    })
+    assert status["submission_enabled"] is True
+    assert status["cluster"]["username"] == "student"
+    assert status["profile_source"] == "cluster_discovery"
+
+
+def test_runtime_status_reports_missing_first_run_configuration(tmp_path):
+    status = dispatch("runtime_status", {
+        "cluster_config_path": str(tmp_path / "cluster.json"),
+        "profiles_path": str(tmp_path / "profiles.yaml"),
+    })
+    assert status["cluster_configured"] is False
+    assert status["profiles_configured"] is False
+    assert status["submission_enabled"] is False
+    assert status["profile_source"] is None
+
+
+def test_known_cluster_automatically_uses_shared_audited_profiles_only(tmp_path):
+    profiles = tmp_path / "profiles.yaml"
+    cluster = tmp_path / "cluster.json"
+    saved = dispatch("configure_cluster", {
+        "cluster_config_path": str(cluster),
+        "profiles_path": str(profiles),
+        "profile": {
+            "id": "primary",
+            "display_name": "Known GPU cluster",
+            "host": "10.158.132.77",
+            "ssh_port": 22,
+        },
+        "username": "student",
+    })
+    assert saved["profile_source"] == "known_cluster"
+    configured = dispatch("list_profiles", {"profiles_path": str(profiles)})
+    identifiers = {item["id"] for item in configured["environments"]}
+    assert identifiers == {
+        "system-python312", "shared-conda-base", "shared-sci",
+        "shared-pygamd", "system-toolchain", "gromacs-2026",
+    }
+    assert "user-dpd-pygamd" not in identifiers
+    assert "newtorch" not in identifiers
+    assert dispatch("runtime_status", {
+        "cluster_config_path": str(cluster),
+        "profiles_path": str(profiles),
+    })["profile_source"] == "known_cluster"
+
+
+def test_managed_profiles_cannot_change_silently_after_cluster_configuration(tmp_path):
+    profiles = tmp_path / "profiles.yaml"
+    cluster = tmp_path / "cluster.json"
+    dispatch("configure_cluster", {
+        "cluster_config_path": str(cluster),
+        "profiles_path": str(profiles),
         "profile": {
             "id": "primary",
             "display_name": "Synthetic cluster",
@@ -181,13 +258,16 @@ def test_cluster_configuration_contains_no_credentials_and_enables_runtime_metad
             "ssh_port": 22,
         },
         "username": "student",
-    }
+    })
+    profiles.write_text("environments: []\nlaunchers: []\n", encoding="utf-8")
     status = dispatch("runtime_status", {
         "cluster_config_path": str(cluster),
         "profiles_path": str(profiles),
     })
-    assert status["submission_enabled"] is True
-    assert status["cluster"]["username"] == "student"
+    assert status["cluster_configured"] is True
+    assert status["profiles_configured"] is False
+    assert status["submission_enabled"] is False
+    assert any("changed after the cluster was saved" in item for item in status["problems"])
 
 
 def test_duplicate_profile_keys_are_rejected(tmp_path):

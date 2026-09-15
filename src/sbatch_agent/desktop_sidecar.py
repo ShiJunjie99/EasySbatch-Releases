@@ -11,6 +11,8 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 from datetime import datetime, timezone
+import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -24,6 +26,7 @@ from pydantic import ValidationError
 from .cluster import ClusterService, ClusterUnavailableError, SlurmClusterClient
 from .cluster_models import ClusterSnapshot
 from .cluster_profile import ClusterProfile
+from .desktop_profiles import managed_profiles, profile_source
 from .desktop_ssh import DesktopSSHSlurmRunner, DesktopSSHUnavailableError
 from .launcher_client import validate_username
 from .models import JobSpec
@@ -129,7 +132,7 @@ def _read_regular_file(path_value: object, *, limit: int, label: str = "profiles
         os.close(descriptor)
 
 
-def _load_profiles(path_value: object) -> StaticProfiles:
+def _load_profiles(path_value: object, *, expected_sha256: str | None = None) -> StaticProfiles:
     import yaml
 
     class UniqueSafeLoader(yaml.SafeLoader):
@@ -146,7 +149,15 @@ def _load_profiles(path_value: object) -> StaticProfiles:
 
     UniqueSafeLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, mapping)
     try:
-        data = yaml.load(_read_regular_file(path_value, limit=MAX_PROFILE_BYTES), Loader=UniqueSafeLoader)
+        raw = _read_regular_file(path_value, limit=MAX_PROFILE_BYTES)
+        if expected_sha256 is not None and not hmac.compare_digest(
+            hashlib.sha256(raw).hexdigest(), expected_sha256,
+        ):
+            raise SidecarError(
+                "PROFILE_CHANGED",
+                "The automatic environment configuration changed after the cluster was saved",
+            )
+        data = yaml.load(raw, Loader=UniqueSafeLoader)
         return StaticProfiles.model_validate(data)
     except SidecarError:
         raise
@@ -178,7 +189,9 @@ def _unique_json(raw: bytes, *, code: str, message: str) -> object:
         raise SidecarError(code, message) from None
 
 
-def _load_cluster_runner(path_value: object) -> tuple[DesktopSSHSlurmRunner, ClusterProfile, str]:
+def _load_cluster_runner(
+    path_value: object,
+) -> tuple[DesktopSSHSlurmRunner, ClusterProfile, str, str | None]:
     try:
         raw = _read_regular_file(
             path_value, limit=MAX_CONNECTION_BYTES, label="cluster_config_path",
@@ -193,11 +206,25 @@ def _load_cluster_runner(path_value: object) -> tuple[DesktopSSHSlurmRunner, Clu
         message="The desktop cluster configuration is invalid",
     )
     try:
-        if not isinstance(data, dict) or set(data) != {"profile", "username"}:
+        if not isinstance(data, dict) or set(data) not in (
+            {"profile", "username"},
+            {"profile", "username", "profiles_sha256"},
+        ):
             raise ValueError
         profile = ClusterProfile.from_mapping(data["profile"])
         username = validate_username(data["username"])
-        return DesktopSSHSlurmRunner(profile=profile, username=username), profile, username
+        fingerprint = data.get("profiles_sha256")
+        if fingerprint is not None and (
+            not isinstance(fingerprint, str) or len(fingerprint) != 64
+            or any(char not in "0123456789abcdef" for char in fingerprint)
+        ):
+            raise ValueError
+        return (
+            DesktopSSHSlurmRunner(profile=profile, username=username),
+            profile,
+            username,
+            fingerprint,
+        )
     except (ValueError, TypeError, DesktopSSHUnavailableError):
         raise SidecarError(
             "CLUSTER_CONFIG_INVALID",
@@ -241,9 +268,47 @@ def _write_private_json(path_value: object, value: object) -> None:
         ) from None
 
 
+def _write_private_profiles(path_value: object, profiles: StaticProfiles) -> str:
+    import yaml
+
+    path = _absolute_path(path_value, label="profiles_path")
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if path.exists() and path.is_symlink():
+            raise OSError("profile path cannot be a link")
+        payload = yaml.safe_dump(
+            profiles.model_dump(mode="json"),
+            allow_unicode=True,
+            sort_keys=False,
+        ).encode("utf-8")
+        if len(payload) > MAX_PROFILE_BYTES:
+            raise OSError("managed profile document exceeds the size limit")
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent,
+        )
+        temporary = Path(temporary_name)
+        try:
+            os.chmod(temporary, 0o600)
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return hashlib.sha256(payload).hexdigest()
+    except OSError:
+        raise SidecarError(
+            "PROFILE_UNAVAILABLE",
+            "The desktop environment configuration could not be saved",
+        ) from None
+
+
 def _submission_service(values: dict[str, object]) -> SubmissionService:
-    runner, _, _ = _load_cluster_runner(values["cluster_config_path"])
-    profiles = _load_profiles(values["profiles_path"])
+    runner, _, _, expected_profiles = _load_cluster_runner(values["cluster_config_path"])
+    profiles = _load_profiles(
+        values["profiles_path"], expected_sha256=expected_profiles,
+    )
     repository = _repository(values["database_path"])
     try:
         root = _absolute_path(values["submission_root"], label="submission_root")
@@ -420,14 +485,19 @@ def dispatch(method: str, params: object) -> dict[str, object]:
     if method == "runtime_status":
         values = _exact_params(params, {"cluster_config_path", "profiles_path"})
         problems = []
-        cluster = profile = None
+        cluster = None
+        expected_profiles = None
         try:
-            _, cluster, username = _load_cluster_runner(values["cluster_config_path"])
+            _, cluster, username, expected_profiles = _load_cluster_runner(
+                values["cluster_config_path"],
+            )
         except SidecarError as exc:
             username = None
             problems.append(str(exc))
         try:
-            profiles = _load_profiles(values["profiles_path"])
+            profiles = _load_profiles(
+                values["profiles_path"], expected_sha256=expected_profiles,
+            )
         except SidecarError as exc:
             profiles = None
             problems.append(str(exc))
@@ -446,10 +516,16 @@ def dispatch(method: str, params: object) -> dict[str, object]:
                 "environments": len(profiles.environments),
                 "launchers": len(profiles.launchers),
             },
+            "profile_source": (
+                None if profiles is None or cluster is None
+                else profile_source(profiles, cluster.host)
+            ),
             "problems": problems,
         }
     if method == "configure_cluster":
-        values = _exact_params(params, {"cluster_config_path", "profile", "username"})
+        values = _exact_params(
+            params, {"cluster_config_path", "profiles_path", "profile", "username"},
+        )
         try:
             profile = ClusterProfile.from_mapping(values["profile"])
             username = validate_username(values["username"])
@@ -458,9 +534,12 @@ def dispatch(method: str, params: object) -> dict[str, object]:
                 "CLUSTER_CONFIG_INVALID",
                 "Cluster name, host, port, or Linux username is invalid",
             ) from None
+        profiles, source = managed_profiles(profile.host)
+        fingerprint = _write_private_profiles(values["profiles_path"], profiles)
         _write_private_json(values["cluster_config_path"], {
             "profile": profile.to_mapping(),
             "username": username,
+            "profiles_sha256": fingerprint,
         })
         return {
             "saved": True,
@@ -469,6 +548,11 @@ def dispatch(method: str, params: object) -> dict[str, object]:
                 "username": username,
             },
             "credentials_stored": False,
+            "profile_source": source,
+            "profile_counts": {
+                "environments": len(profiles.environments),
+                "launchers": len(profiles.launchers),
+            },
         }
     if method == "scan_project":
         values = _exact_params(params, {"project_dir"})
@@ -534,7 +618,7 @@ def dispatch(method: str, params: object) -> dict[str, object]:
         }
     if method == "cluster_snapshot":
         values = _exact_params(params, {"cluster_config_path"})
-        runner, _, username = _load_cluster_runner(values["cluster_config_path"])
+        runner, _, username, _ = _load_cluster_runner(values["cluster_config_path"])
         try:
             snapshot = ClusterService(
                 SlurmClusterClient(runner=runner), current_user=username,
@@ -554,8 +638,12 @@ def dispatch(method: str, params: object) -> dict[str, object]:
             raise SidecarError("JOB_SPEC_INVALID", _validation_message(exc)) from None
         except (ValueError, TypeError):
             raise SidecarError("INVALID_PARAMS", "preference is invalid") from None
-        profiles = _load_profiles(values["profiles_path"])
-        runner, _, username = _load_cluster_runner(values["cluster_config_path"])
+        runner, _, username, expected_profiles = _load_cluster_runner(
+            values["cluster_config_path"],
+        )
+        profiles = _load_profiles(
+            values["profiles_path"], expected_sha256=expected_profiles,
+        )
         try:
             snapshot = ClusterService(
                 SlurmClusterClient(runner=runner), current_user=username,

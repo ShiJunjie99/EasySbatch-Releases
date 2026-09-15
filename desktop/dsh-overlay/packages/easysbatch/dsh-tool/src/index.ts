@@ -193,6 +193,17 @@ export function apply(ctx: Context): void {
     },
   }))
   ctx.tools.register(defineTool({
+    name: 'easysbatch_list_profiles',
+    description: 'List the environment and launcher profiles automatically configured for the selected cluster. Use this before preparing a JobSpec; never invent a profile identifier.',
+    parameters: {},
+    output: JSON_OUTPUT,
+    async execute(_args, exec) {
+      return await callCore('list_profiles', {
+        profiles_path: productPaths().profilesPath,
+      }, exec.signal)
+    },
+  }))
+  ctx.tools.register(defineTool({
     name: 'easysbatch_recommend_job',
     description: 'Recommend an eligible Slurm partition and registered resource shape from a fresh cluster snapshot. It never chooses a physical node, predicts wait time, or submits the job.',
     parameters: {
@@ -276,7 +287,7 @@ export function apply(ctx: Context): void {
   }))
   ctx.tools.register(defineTool({
     name: 'easysbatch_render_job',
-    description: 'Validate and deterministically render one JobSpec into a Bash/sbatch preview using the administrator-supplied profile file. This never executes or submits the script.',
+    description: 'Validate and deterministically render one JobSpec into a Bash/sbatch preview using the product-managed profile selected for this cluster. This never executes or submits the script.',
     parameters: {
       job_spec: {
         type: 'object',

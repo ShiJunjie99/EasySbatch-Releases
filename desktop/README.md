@@ -22,7 +22,7 @@ The desktop Beta exposes these model tools:
 - read an aggregate cluster snapshot;
 - recommend an eligible partition and registered resource shape;
 - validate a strict `JobSpec`;
-- render an sbatch script preview from a maintainer-supplied profile file;
+- render an sbatch script preview from the automatically selected profile set;
 - save a resolved job as a local, reviewable task draft.
 
 The model cannot submit a job. Submission is available only in the **Task
@@ -77,16 +77,15 @@ the in-app form never asks for a password or key. Before testing the connection,
 run the operating-system `ssh` command once so the user can verify the host
 fingerprint and make key/ssh-agent authentication available.
 
-To render, recommend, or submit, create `harness/profiles.yaml` below the Beta
-EasySbatch user-data directory using the existing `StaticProfiles` schema. A
-cluster administrator must audit this file; public example profiles are only
-synthetic test inputs. Task history is stored separately in
-`harness/jobs.sqlite3`, and immutable submission scripts are staged below
+Saving the connection also creates the product-owned `harness/profiles.yaml`.
+For `10.158.132.77`, Beta selects the previously audited cluster-wide shared
+environments. Personal paths and environments are intentionally excluded. For
+any other host, Beta creates a no-command `cluster-default` environment instead
+of guessing modules, Conda paths, or installed software. In both cases,
+partitions, nodes, CPU/GPU capacity, and queue state are read live from Slurm;
+they are not copied from a static template. Task history is stored separately
+in `harness/jobs.sqlite3`, and immutable submission scripts are staged below
 `harness/runs/`.
-
-The expected profile locations are `%APPDATA%\Beta EasySbatch\harness\profiles.yaml`
-on Windows and `~/Library/Application Support/Beta EasySbatch/harness/profiles.yaml`
-on macOS. `examples/profiles.yaml` is suitable only as synthetic test input.
 
 Expected checks:
 
@@ -96,7 +95,8 @@ Expected checks:
    files** window opens on the right. Drag its blue divider to resize it.
 3. The left navigation contains **Task history** and **Cluster resources**.
 4. With no `cluster.json`, the UI says the cluster is not configured and keeps
-   the submit button disabled.
+   the submit button disabled. Saving a valid connection automatically selects
+   the known shared preset or the safe `cluster-default` fallback.
 5. Project scanning and the Project files window cannot choose a path outside
    the selected workspace.
 6. Asking the model to run Shell, edit a file, browse the Web, or submit a job

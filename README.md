@@ -1,9 +1,5 @@
 # EasySbatch
 
-> This is a history-free public build snapshot for the **Beta EasySbatch**
-> desktop application. Read [PUBLIC_BUILD_SNAPSHOT.md](PUBLIC_BUILD_SNAPSHOT.md)
-> before using its unsigned CI artifacts.
-
 > **New desktop direction:** `Beta EasySbatch` now has a native Windows x64 and
 > Apple Silicon macOS architecture based on a pinned DeepSeek Harness desktop
 > runtime. It does not open an external browser or listen on localhost. See
@@ -89,9 +85,11 @@ See [SECURITY_MODEL.md](SECURITY_MODEL.md) and [SECURITY.md](SECURITY.md).
 .venv/bin/python -m pytest -q
 ```
 
-Use only synthetic users, hosts, paths, and credentials in tests. Keep real
-catalogs, databases, runs, logs, project inputs, and deployment profiles under
-the ignored `deployment-private/` directory or outside the repository.
+Use only synthetic users and credentials in tests. The desktop Beta has one
+explicit public preset for `10.158.132.77`; it contains cluster-wide shared
+loading steps only. Keep user-specific paths and environments, full real
+catalogs, databases, runs, logs, project inputs, and other deployment profiles
+under the ignored `deployment-private/` directory or outside the repository.
 
 The current alpha is intentionally incomplete. Windows/macOS native credential
 tests and real two-user DeepSeek acceptance are still outstanding. Historical

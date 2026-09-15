@@ -61,8 +61,20 @@ def test_product_ui_owns_history_cluster_and_explicit_submission():
     assert "submitJob(job.id, job.id)" in client
     assert "@Remote('submitJob')" in host
     assert "easysbatch_recommend_job" in tool
+    assert "easysbatch_list_profiles" in tool
     assert "easysbatch_prepare_job" in tool
     assert "name: 'easysbatch_submit_job'" not in tool
+    assert "保存、自动配置并测试" in client
+    assert "10.158.132.77" in client
+    assert "profiles_path: paths().profilesPath" in host
+
+
+def test_known_cluster_preset_excludes_personal_deployment_paths():
+    source = (ROOT / "src/sbatch_agent/desktop_profiles.py").read_text(encoding="utf-8")
+    assert "/home/share/" in source
+    assert "/home/shijunjie/" not in source
+    assert "/mnt/sdc/" not in source
+    assert "newtorch" not in source
 
 
 def test_desktop_patch_uses_workspace_first_easysbatch_layout():
