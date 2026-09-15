@@ -9,11 +9,17 @@ import re
 
 ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 DIAGNOSTIC = re.compile(
-    r"(?i)(?:\berror\b|\bfailed\b|\bfailure\b|\bfatal\b|exception|traceback|"
-    r"cannot find|not found|exited with|killed|out of memory|ENOMEM|ERR_|ELIFECYCLE|TS\d{4})"
+    r"(?i)(?:^\s*(?:ERROR|FATAL)(?:\s|:)|\bError:|\bException:|Traceback|"
+    r"Cannot find entry|Command failed|returned non-zero|exited with|Process completed|"
+    r"killed|out of memory|ENOMEM|ERR_[A-Z_]+|ELIFECYCLE|TS\d{4}|\s⨯\s)"
 )
-SENSITIVE = re.compile(r"(?i)(?:authorization|password|passwd|api[_-]?key|access[_-]?token|client[_-]?secret)")
-MAX_ANNOTATION_BYTES = 48_000
+SENSITIVE = re.compile(
+    r"(?i)(?:authorization\s*:\s*(?:bearer|basic)|"
+    r"(?:password|passwd|api[_-]?key|access[_-]?token|client[_-]?secret)\s*[:=])"
+)
+# GitHub check-run annotation messages are truncated at 4096 characters. Keep
+# enough headroom for multibyte text and workflow-command escaping.
+MAX_ANNOTATION_BYTES = 3_500
 
 
 def diagnostics(raw: str, *, context: int = 3) -> str:

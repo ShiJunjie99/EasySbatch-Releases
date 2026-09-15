@@ -21,6 +21,19 @@ def test_diagnostics_selects_error_context_and_redacts_sensitive_lines():
     assert "unrelated end" not in value
 
 
+def test_diagnostics_ignores_error_filenames_but_keeps_real_error_lines():
+    raw = "\n".join([
+        "lib/types/error.js",
+        "lib/types/remote-error.d.ts",
+        "ERROR Error: packaging failed",
+        "    at build (package-target.ts:10:2)",
+    ])
+
+    value = diagnostics(raw, context=0)
+
+    assert value == "ERROR Error: packaging failed"
+
+
 def test_diagnostics_falls_back_to_log_tail():
     raw = "\n".join(f"line {index}" for index in range(50))
 
