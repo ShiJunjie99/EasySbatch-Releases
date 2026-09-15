@@ -45,9 +45,11 @@ def test_archive_extraction_omits_safe_symlinks_for_windows(tmp_path):
     with tarfile.open(archive, "w:gz") as target:
         root = tarfile.TarInfo("source")
         root.type = tarfile.DIRTYPE
+        root.mode = 0o755
         target.addfile(root)
         body = b"safe\n"
         regular = tarfile.TarInfo("source/target.txt")
+        regular.mode = 0o644
         regular.size = len(body)
         target.addfile(regular, io.BytesIO(body))
         link = tarfile.TarInfo("source/link.txt")
