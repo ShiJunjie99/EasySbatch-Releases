@@ -124,9 +124,13 @@ def test_create_list_and_get_reviewed_desktop_job(tmp_path):
         "stdout": "logs/%j.out",
         "stderr": "logs/%j.err",
     }
+    reviewed = dispatch("render_job", {
+        "job_spec": job, "profiles_path": str(profiles),
+    })
     created = dispatch("create_job", {
         "job_spec": job,
         "name": "Desktop test",
+        "review_sha256": reviewed["review_sha256"],
         "profiles_path": str(profiles),
         "database_path": str(database),
         "submission_root": str(runs),
@@ -145,6 +149,30 @@ def test_create_list_and_get_reviewed_desktop_job(tmp_path):
     assert detail["stdout_path"] == "logs/%j.out"
 
 
+def test_changed_job_cannot_be_saved_with_an_old_review_token(tmp_path):
+    profiles = tmp_path / "profiles.yaml"
+    profiles.write_text(yaml.safe_dump({
+        "environments": [{"id": "python", "version": "1", "load_steps": []}],
+        "launchers": [],
+    }), encoding="utf-8")
+    job = {
+        "project_dir": "/cluster/project", "work_dir": "/cluster/project",
+        "run_type": "python", "entrypoint": "train.py",
+        "environment_profile": {"id": "python", "version": "1"},
+        "run_step": {"executable": "python", "args": ["train.py"]},
+        "resources": {"partition": "cpu", "memory_mib": 256, "time_limit_seconds": 120},
+        "spec_version": 1,
+    }
+    reviewed = dispatch("render_job", {"job_spec": job, "profiles_path": str(profiles)})
+    job["resources"]["cpus_per_task"] = 2
+    response = handle_request(request("create_job", {
+        "job_spec": job, "name": "Changed", "review_sha256": reviewed["review_sha256"],
+        "profiles_path": str(profiles), "database_path": str(tmp_path / "jobs.sqlite3"),
+        "submission_root": str(tmp_path / "runs"),
+    }))
+    assert response["error"]["code"] == "REVIEW_CHANGED"
+
+
 def test_submit_requires_exact_user_confirmation_before_cluster_access(tmp_path):
     response = handle_request(request("submit_job", {
         "record_id": "3a9a8fd8-b8cc-49ba-9238-a673158b06b2",
@@ -159,10 +187,12 @@ def test_submit_requires_exact_user_confirmation_before_cluster_access(tmp_path)
 
 def test_cluster_configuration_contains_no_credentials_and_enables_runtime_metadata(tmp_path):
     profiles = tmp_path / "profiles.yaml"
+    catalog = tmp_path / "server-catalog.yaml"
     cluster = tmp_path / "state" / "cluster.json"
     saved = dispatch("configure_cluster", {
         "cluster_config_path": str(cluster),
         "profiles_path": str(profiles),
+        "catalog_path": str(catalog),
         "profile": {
             "id": "primary",
             "display_name": "Synthetic cluster",
@@ -174,6 +204,7 @@ def test_cluster_configuration_contains_no_credentials_and_enables_runtime_metad
     assert saved["credentials_stored"] is False
     assert saved["profile_source"] == "cluster_discovery"
     assert saved["profile_counts"] == {"environments": 1, "launchers": 0}
+    assert saved["catalog_counts"] == {"environments": 0, "software": 0, "compilers": 0}
     assert yaml.safe_load(profiles.read_text(encoding="utf-8")) == {
         "environments": [{
             "id": "cluster-default",
@@ -196,9 +227,12 @@ def test_cluster_configuration_contains_no_credentials_and_enables_runtime_metad
     assert stored["username"] == "student"
     assert len(stored["profiles_sha256"]) == 64
     int(stored["profiles_sha256"], 16)
+    assert len(stored["catalog_sha256"]) == 64
+    int(stored["catalog_sha256"], 16)
     status = dispatch("runtime_status", {
         "cluster_config_path": str(cluster),
         "profiles_path": str(profiles),
+        "catalog_path": str(catalog),
     })
     assert status["submission_enabled"] is True
     assert status["cluster"]["username"] == "student"
@@ -209,19 +243,23 @@ def test_runtime_status_reports_missing_first_run_configuration(tmp_path):
     status = dispatch("runtime_status", {
         "cluster_config_path": str(tmp_path / "cluster.json"),
         "profiles_path": str(tmp_path / "profiles.yaml"),
+        "catalog_path": str(tmp_path / "server-catalog.yaml"),
     })
     assert status["cluster_configured"] is False
     assert status["profiles_configured"] is False
+    assert status["catalog_configured"] is False
     assert status["submission_enabled"] is False
     assert status["profile_source"] is None
 
 
 def test_known_cluster_automatically_uses_shared_audited_profiles_only(tmp_path):
     profiles = tmp_path / "profiles.yaml"
+    catalog = tmp_path / "server-catalog.yaml"
     cluster = tmp_path / "cluster.json"
     saved = dispatch("configure_cluster", {
         "cluster_config_path": str(cluster),
         "profiles_path": str(profiles),
+        "catalog_path": str(catalog),
         "profile": {
             "id": "primary",
             "display_name": "Known GPU cluster",
@@ -239,18 +277,59 @@ def test_known_cluster_automatically_uses_shared_audited_profiles_only(tmp_path)
     }
     assert "user-dpd-pygamd" not in identifiers
     assert "newtorch" not in identifiers
+    configured_catalog = dispatch("list_catalog", {
+        "profiles_path": str(profiles),
+        "catalog_path": str(catalog),
+    })
+    assert {item["id"] for item in configured_catalog["software"]} == {
+        "gromacs-2026", "tops-2020", "scft-2026",
+    }
+    assert configured_catalog["software"][0]["verification_status"] == "VERIFIED"
+    dumped_catalog = catalog.read_text(encoding="utf-8")
+    assert "/home/shijunjie/" not in dumped_catalog
+    assert "/mnt/sdc/" not in dumped_catalog
+    assert "newtorch" not in dumped_catalog
+    gromacs_job = {
+        "project_dir": "/home/student/project", "work_dir": "/home/student/project",
+        "run_type": "installed", "entrypoint": "gromacs-2026",
+        "environment_profile": {"id": "gromacs-2026", "version": "1"},
+        "run_step": {
+            "executable": next(
+                item["executable"] for item in configured_catalog["software"]
+                if item["id"] == "gromacs-2026"
+            ),
+            "args": ["--version"],
+        },
+        "resources": {"partition": "cpu", "memory_mib": 256, "time_limit_seconds": 120},
+        "spec_version": 1,
+    }
+    reviewed = dispatch("review_job", {
+        "job_spec": gromacs_job, "profiles_path": str(profiles),
+        "catalog_path": str(catalog), "software_id": "gromacs-2026",
+    })
+    assert len(reviewed["review_sha256"]) == 64
+    assert reviewed["software"]["verification_status"] == "VERIFIED"
+    gromacs_job["run_step"]["executable"] = "/usr/bin/false"
+    mismatch = handle_request(request("review_job", {
+        "job_spec": gromacs_job, "profiles_path": str(profiles),
+        "catalog_path": str(catalog), "software_id": "gromacs-2026",
+    }))
+    assert mismatch["error"]["code"] == "CATALOG_MISMATCH"
     assert dispatch("runtime_status", {
         "cluster_config_path": str(cluster),
         "profiles_path": str(profiles),
+        "catalog_path": str(catalog),
     })["profile_source"] == "known_cluster"
 
 
 def test_managed_profiles_cannot_change_silently_after_cluster_configuration(tmp_path):
     profiles = tmp_path / "profiles.yaml"
+    catalog = tmp_path / "server-catalog.yaml"
     cluster = tmp_path / "cluster.json"
     dispatch("configure_cluster", {
         "cluster_config_path": str(cluster),
         "profiles_path": str(profiles),
+        "catalog_path": str(catalog),
         "profile": {
             "id": "primary",
             "display_name": "Synthetic cluster",
@@ -263,6 +342,7 @@ def test_managed_profiles_cannot_change_silently_after_cluster_configuration(tmp
     status = dispatch("runtime_status", {
         "cluster_config_path": str(cluster),
         "profiles_path": str(profiles),
+        "catalog_path": str(catalog),
     })
     assert status["cluster_configured"] is True
     assert status["profiles_configured"] is False
@@ -301,3 +381,84 @@ def test_protocol_rejects_unknown_fields_and_methods():
     malformed = request("health", {}) | {"extra": True}
     assert handle_request(malformed)["error"]["code"] == "INVALID_REQUEST"
     assert handle_request(request("delete_job", {}))["error"]["code"] == "METHOD_NOT_FOUND"
+
+
+def test_user_driven_remote_directory_browse_uses_bounded_runner(monkeypatch):
+    class SyntheticRunner:
+        def list_directory(self, path, *, timeout):
+            assert path == "/home/student/project"
+            assert timeout == 15
+            return {
+                "path": path,
+                "entries": [{
+                    "name": "inputs", "kind": "directory", "size": None,
+                    "modified_ns": 1,
+                }],
+                "truncated": False,
+            }
+
+    monkeypatch.setattr(
+        "sbatch_agent.desktop_sidecar._load_cluster_runner",
+        lambda _path: (SyntheticRunner(), None, "student", None, None),
+    )
+    result = dispatch("browse_remote_directory", {
+        "cluster_config_path": "/synthetic/cluster.json",
+        "path": "/home/student/project",
+    })
+    assert result["entries"][0]["name"] == "inputs"
+
+
+def test_desktop_recommendation_can_compare_all_visible_partitions(tmp_path, monkeypatch):
+    profiles = tmp_path / "profiles.yaml"
+    catalog = tmp_path / "catalog.yaml"
+    cluster = tmp_path / "cluster.json"
+    dispatch("configure_cluster", {
+        "cluster_config_path": str(cluster), "profiles_path": str(profiles),
+        "catalog_path": str(catalog),
+        "profile": {
+            "id": "primary", "display_name": "Synthetic",
+            "host": "cluster.example.edu", "ssh_port": 22,
+        },
+        "username": "student",
+    })
+    fingerprints = json.loads(cluster.read_text(encoding="utf-8"))
+    monkeypatch.setattr(
+        "sbatch_agent.desktop_sidecar._load_cluster_runner",
+        lambda _path: (
+            object(), None, "student", fingerprints["profiles_sha256"],
+            fingerprints["catalog_sha256"],
+        ),
+    )
+
+    class SyntheticClusterService:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def get_snapshot(self):
+            return object()
+
+    captured = {}
+
+    class SyntheticRecommender:
+        def recommend(self, *, spec, **_kwargs):
+            captured["partition"] = spec.resources.partition
+            return object()
+
+    monkeypatch.setattr("sbatch_agent.desktop_sidecar.ClusterService", SyntheticClusterService)
+    monkeypatch.setattr("sbatch_agent.desktop_sidecar.ResourceRecommender", SyntheticRecommender)
+    monkeypatch.setattr("sbatch_agent.desktop_sidecar._recommendation_view", lambda _report: {"ok": True})
+    result = dispatch("recommend_job", {
+        "job_spec": {
+            "project_dir": "/home/student/project", "work_dir": "/home/student/project",
+            "run_type": "python", "entrypoint": "train.py",
+            "environment_profile": {"id": "cluster-default", "version": "1"},
+            "run_step": {"executable": "python", "args": ["train.py"]},
+            "resources": {"partition": "first", "memory_mib": 256, "time_limit_seconds": 120},
+            "spec_version": 1,
+        },
+        "profiles_path": str(profiles), "catalog_path": str(catalog),
+        "cluster_config_path": str(cluster), "preference": "BALANCED",
+        "software_id": None, "consider_all_partitions": True,
+    })
+    assert result == {"ok": True}
+    assert captured["partition"] is None

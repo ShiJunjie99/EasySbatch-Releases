@@ -26,6 +26,7 @@ export class EasySbatchDesktop extends TypertRemoteService {
     const value = paths()
     return callCore('runtime_status', {
       profiles_path: value.profilesPath,
+      catalog_path: value.catalogPath,
       cluster_config_path: value.clusterConfigPath,
     }, signal)
   }
@@ -35,6 +36,51 @@ export class EasySbatchDesktop extends TypertRemoteService {
     return callCore('list_jobs', {
       database_path: paths().databasePath,
       limit,
+    }, signal)
+  }
+
+  @Remote('listProfiles')
+  listProfiles(signal: AbortSignal): Promise<JsonValue> {
+    return callCore('list_profiles', {
+      profiles_path: paths().profilesPath,
+    }, signal)
+  }
+
+  @Remote('listCatalog')
+  listCatalog(signal: AbortSignal): Promise<JsonValue> {
+    const value = paths()
+    return callCore('list_catalog', {
+      profiles_path: value.profilesPath,
+      catalog_path: value.catalogPath,
+    }, signal)
+  }
+
+  @Remote('renderJob')
+  renderJob(jobSpec: JsonValue, softwareId: string | null, signal: AbortSignal): Promise<JsonValue> {
+    const value = paths()
+    return callCore('review_job', {
+      job_spec: jobSpec,
+      profiles_path: value.profilesPath,
+      catalog_path: value.catalogPath,
+      software_id: softwareId,
+    }, signal)
+  }
+
+  @Remote('createJob')
+  createJob(
+    jobSpec: JsonValue,
+    name: string,
+    reviewSha256: string,
+    signal: AbortSignal,
+  ): Promise<JsonValue> {
+    const value = paths()
+    return callCore('create_job', {
+      job_spec: jobSpec,
+      name,
+      review_sha256: reviewSha256,
+      profiles_path: value.profilesPath,
+      database_path: value.databasePath,
+      submission_root: value.submissionRoot,
     }, signal)
   }
 
@@ -53,6 +99,14 @@ export class EasySbatchDesktop extends TypertRemoteService {
     }, signal)
   }
 
+  @Remote('browseRemoteDirectory')
+  browseRemoteDirectory(path: string, signal: AbortSignal): Promise<JsonValue> {
+    return callCore('browse_remote_directory', {
+      cluster_config_path: paths().clusterConfigPath,
+      path,
+    }, signal)
+  }
+
   @Remote('configureCluster')
   configureCluster(
     id: string,
@@ -65,19 +119,29 @@ export class EasySbatchDesktop extends TypertRemoteService {
     return callCore('configure_cluster', {
       cluster_config_path: paths().clusterConfigPath,
       profiles_path: paths().profilesPath,
+      catalog_path: paths().catalogPath,
       profile: { id, display_name: displayName, host, ssh_port: sshPort },
       username,
     }, signal)
   }
 
   @Remote('recommendJob')
-  recommendJob(jobSpec: JsonValue, preference: string, signal: AbortSignal): Promise<JsonValue> {
+  recommendJob(
+    jobSpec: JsonValue,
+    preference: string,
+    softwareId: string | null,
+    considerAllPartitions: boolean,
+    signal: AbortSignal,
+  ): Promise<JsonValue> {
     const value = paths()
     return callCore('recommend_job', {
       job_spec: jobSpec,
       preference,
       profiles_path: value.profilesPath,
+      catalog_path: value.catalogPath,
       cluster_config_path: value.clusterConfigPath,
+      software_id: softwareId,
+      consider_all_partitions: considerAllPartitions,
     }, signal)
   }
 

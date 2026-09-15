@@ -147,6 +147,7 @@ export function callCore(method: string, params: Record<string, unknown>, signal
 
 export interface ProductPaths {
   readonly profilesPath: string
+  readonly catalogPath: string
   readonly clusterConfigPath: string
   readonly databasePath: string
   readonly submissionRoot: string
@@ -159,6 +160,7 @@ export function productPaths(): ProductPaths {
   }
   return {
     profilesPath: process.env.BETA_EASYSBATCH_PROFILES_PATH ?? join(productHome, 'profiles.yaml'),
+    catalogPath: process.env.BETA_EASYSBATCH_CATALOG_PATH ?? join(productHome, 'server-catalog.yaml'),
     clusterConfigPath: process.env.BETA_EASYSBATCH_CLUSTER_CONFIG_PATH ?? join(productHome, 'cluster.json'),
     databasePath: join(productHome, 'jobs.sqlite3'),
     submissionRoot: join(productHome, 'runs'),
@@ -204,6 +206,19 @@ export function apply(ctx: Context): void {
     },
   }))
   ctx.tools.register(defineTool({
+    name: 'easysbatch_list_catalog',
+    description: 'List product-managed software, compiler, and environment facts for the selected cluster. Verification status is preserved; never infer facts absent from this catalog.',
+    parameters: {},
+    output: JSON_OUTPUT,
+    async execute(_args, exec) {
+      const paths = productPaths()
+      return await callCore('list_catalog', {
+        profiles_path: paths.profilesPath,
+        catalog_path: paths.catalogPath,
+      }, exec.signal)
+    },
+  }))
+  ctx.tools.register(defineTool({
     name: 'easysbatch_recommend_job',
     description: 'Recommend an eligible Slurm partition and registered resource shape from a fresh cluster snapshot. It never chooses a physical node, predicts wait time, or submits the job.',
     parameters: {
@@ -219,6 +234,16 @@ export function apply(ctx: Context): void {
         default: 'BALANCED',
         description: 'Ranking preference; BALANCED is the default.',
       },
+      software_id: {
+        type: 'string',
+        description: 'Optional exact software identifier returned by easysbatch_list_catalog.',
+      },
+      partition_mode: {
+        type: 'string',
+        enum: ['auto', 'fixed'],
+        default: 'auto',
+        description: 'auto compares visible eligible partitions; fixed checks only the JobSpec partition.',
+      },
     },
     output: JSON_OUTPUT,
     async execute(args, exec) {
@@ -226,8 +251,11 @@ export function apply(ctx: Context): void {
       return await callCore('recommend_job', {
         job_spec: args.job_spec,
         profiles_path: paths.profilesPath,
+        catalog_path: paths.catalogPath,
         cluster_config_path: paths.clusterConfigPath,
         preference: args.preference ?? 'BALANCED',
+        software_id: args.software_id ?? null,
+        consider_all_partitions: (args.partition_mode ?? 'auto') === 'auto',
       }, exec.signal)
     },
   }))
@@ -245,6 +273,11 @@ export function apply(ctx: Context): void {
         type: 'string',
         description: 'Optional user-facing task name.',
       },
+      review_sha256: {
+        type: 'string',
+        required: true,
+        description: 'Exact review token returned by easysbatch_render_job for this unchanged JobSpec.',
+      },
     },
     output: JSON_OUTPUT,
     async execute(args, exec) {
@@ -252,6 +285,7 @@ export function apply(ctx: Context): void {
       return await callCore('create_job', {
         job_spec: args.job_spec,
         name: args.name ?? null,
+        review_sha256: args.review_sha256,
         profiles_path: paths.profilesPath,
         database_path: paths.databasePath,
         submission_root: paths.submissionRoot,
@@ -295,13 +329,19 @@ export function apply(ctx: Context): void {
         additionalProperties: true,
         description: 'Complete JobSpec object using absolute POSIX paths for the target cluster.',
       },
+      software_id: {
+        type: 'string',
+        description: 'Optional exact software identifier returned by easysbatch_list_catalog.',
+      },
     },
     output: JSON_OUTPUT,
     async execute(args, exec) {
-      const profilesPath = productPaths().profilesPath
-      return await callCore('render_job', {
+      const paths = productPaths()
+      return await callCore('review_job', {
         job_spec: args.job_spec,
-        profiles_path: profilesPath,
+        software_id: args.software_id ?? null,
+        profiles_path: paths.profilesPath,
+        catalog_path: paths.catalogPath,
       }, exec.signal)
     },
   }))

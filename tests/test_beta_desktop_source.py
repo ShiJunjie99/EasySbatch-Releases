@@ -56,21 +56,43 @@ def test_product_ui_owns_history_cluster_and_explicit_submission():
     host = (product / "src/index.ts").read_text(encoding="utf-8")
     tool = (ROOT / "desktop/dsh-overlay/packages/easysbatch/dsh-tool/src/index.ts").read_text(encoding="utf-8")
     assert "任务记录" in client
+    assert "新建任务" in client
+    assert "生成脚本预览" in client
+    assert "保存到任务记录" in client
+    assert "服务器项目目录" in client
+    assert "使用集群默认值" in client
+    assert "自动推荐并采用资源" in client
     assert "集群资源" in client
     assert "window.confirm" in client
     assert "submitJob(job.id, job.id)" in client
     assert "@Remote('submitJob')" in host
+    assert "@Remote('renderJob')" in host
+    assert "@Remote('createJob')" in host
+    assert "@Remote('listCatalog')" in host
+    assert "@Remote('browseRemoteDirectory')" in host
+    assert "选择当前目录" in client
     assert "easysbatch_recommend_job" in tool
     assert "easysbatch_list_profiles" in tool
+    assert "easysbatch_list_catalog" in tool
     assert "easysbatch_prepare_job" in tool
+    assert "review_sha256" in tool
+    assert "callCore('review_job'" in tool
+    assert "consider_all_partitions" in tool
     assert "name: 'easysbatch_submit_job'" not in tool
     assert "保存、自动配置并测试" in client
     assert "10.158.132.77" in client
     assert "profiles_path: paths().profilesPath" in host
+    assert "catalog_path: paths().catalogPath" in host
 
 
 def test_known_cluster_preset_excludes_personal_deployment_paths():
-    source = (ROOT / "src/sbatch_agent/desktop_profiles.py").read_text(encoding="utf-8")
+    source = "\n".join(
+        (ROOT / path).read_text(encoding="utf-8")
+        for path in (
+            "src/sbatch_agent/desktop_profiles.py",
+            "src/sbatch_agent/desktop_catalog.py",
+        )
+    )
     assert "/home/share/" in source
     assert "/home/shijunjie/" not in source
     assert "/mnt/sdc/" not in source

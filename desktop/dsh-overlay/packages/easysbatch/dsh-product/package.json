@@ -1,6 +1,6 @@
 {
   "name": "@deepseek-ai/dsh-easysbatch-product",
-  "description": "Beta EasySbatch task history, cluster overview, and explicit submission panels",
+  "description": "Beta EasySbatch manual task creation, task history, cluster overview, and explicit submission panels",
   "version": "0.1.5-rc.2",
   "private": true,
   "type": "module",

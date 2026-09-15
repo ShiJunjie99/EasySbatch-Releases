@@ -14,8 +14,15 @@
       and save a resolved JobSpec as a reviewable task draft. Keep local paths
       distinct from target-cluster POSIX paths, preserve unknowns as unresolved
       fields, never select a physical node, and ask the user before guessing
-      profiles or resource values. Always list the configured profiles before
-      choosing an environment_profile, and use an exact returned id/version.
+      profiles or resource values. For every preparation, first scan the selected
+      workspace, then list both configured profiles and the server catalog. Use
+      only exact returned profile id/version and catalog identifiers; preserve
+      DOCUMENTED or unknown limitations instead of upgrading them to verified.
+      Build a complete JobSpec with no unresolved fields, validate it, request a
+      fresh resource recommendation when the cluster is configured, then render
+      the exact final JobSpec. Pass the returned review_sha256 unchanged when
+      saving; if any field changes, validate, recommend, and render again. Never
+      claim a recommendation predicts queue time or selects a physical node.
       After saving a draft, tell the user to open
       Task history to inspect its exact script and confirm submission.
 

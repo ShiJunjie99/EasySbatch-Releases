@@ -26,17 +26,21 @@ from pydantic import ValidationError
 from .cluster import ClusterService, ClusterUnavailableError, SlurmClusterClient
 from .cluster_models import ClusterSnapshot
 from .cluster_profile import ClusterProfile
+from .desktop_catalog import catalog_source, managed_catalog
 from .desktop_profiles import managed_profiles, profile_source
-from .desktop_ssh import DesktopSSHSlurmRunner, DesktopSSHUnavailableError
+from .desktop_ssh import (
+    DesktopSSHDirectoryError, DesktopSSHSlurmRunner, DesktopSSHUnavailableError,
+)
 from .launcher_client import validate_username
 from .models import JobSpec
 from .persistence import JobRecord, JobRepository, PersistenceError
 from .profiles import StaticProfiles
-from .recommendation_models import RecommendationReport, UserPreference
+from .recommendation_models import RecommendationReport, RecommendationRequest, UserPreference
 from .recommender import RecommendationInputError, ResourceRecommender
 from .renderer import JobSpecValidationError, render_job_script
 from .scanner import ProjectScanError, ProjectScanner
 from .scanner_models import ProjectEvidence, ScanConfig
+from .server_catalog import CatalogError, ServerCatalog, compatibility
 from .service import (
     JobNotSubmittedError, JobNotSubmittableError, SubmissionService,
     SubmissionServiceError,
@@ -48,6 +52,7 @@ PRODUCT_NAME = "Beta EasySbatch"
 PROTOCOL_VERSION = 1
 MAX_REQUEST_BYTES = 1024 * 1024
 MAX_PROFILE_BYTES = 512 * 1024
+MAX_CATALOG_BYTES = 512 * 1024
 MAX_CONNECTION_BYTES = 16 * 1024
 MAX_RESPONSE_BYTES = 1024 * 1024
 
@@ -82,6 +87,22 @@ def _validation_message(exc: ValidationError) -> str:
         location = ".".join(str(part) for part in error["loc"]) or "value"
         issues.append(f"{location}: {error['msg']}")
     return "Invalid structured data: " + "; ".join(issues)
+
+
+def _review_sha256(spec: JobSpec, script: str) -> str:
+    canonical = json.dumps(
+        spec.model_dump(mode="json"), ensure_ascii=False, sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical + b"\0" + script.encode("utf-8")).hexdigest()
+
+
+def _render(spec: JobSpec, profiles: StaticProfiles) -> tuple[str, str]:
+    try:
+        script = render_job_script(spec, profiles=profiles)
+    except JobSpecValidationError as exc:
+        raise SidecarError("JOB_SPEC_NOT_RENDERABLE", "; ".join(exc.issues[:30])) from None
+    return script, _review_sha256(spec, script)
 
 
 def _read_regular_file(path_value: object, *, limit: int, label: str = "profiles_path") -> bytes:
@@ -165,6 +186,33 @@ def _load_profiles(path_value: object, *, expected_sha256: str | None = None) ->
         raise SidecarError("PROFILE_INVALID", "The configured profile file is not a valid StaticProfiles document") from None
 
 
+def _load_catalog(
+    path_value: object, *, profiles: StaticProfiles, expected_sha256: str | None = None,
+) -> ServerCatalog:
+    try:
+        raw = _read_regular_file(
+            path_value, limit=MAX_CATALOG_BYTES, label="catalog_path",
+        )
+        if expected_sha256 is not None and not hmac.compare_digest(
+            hashlib.sha256(raw).hexdigest(), expected_sha256,
+        ):
+            raise SidecarError(
+                "CATALOG_CHANGED",
+                "The automatic software catalog changed after the cluster was saved",
+            )
+        return ServerCatalog.load(path_value, profiles=profiles)
+    except SidecarError as exc:
+        if exc.code in {"CATALOG_CHANGED", "INVALID_PARAMS"}:
+            raise
+        raise SidecarError(
+            "CATALOG_UNAVAILABLE", "The desktop software catalog is unavailable",
+        ) from None
+    except CatalogError:
+        raise SidecarError(
+            "CATALOG_INVALID", "The desktop software catalog is invalid",
+        ) from None
+
+
 def _absolute_path(path_value: object, *, label: str) -> Path:
     if not isinstance(path_value, str) or not path_value.strip() or not path_value.isprintable():
         raise SidecarError("INVALID_PARAMS", f"{label} must be a printable absolute path")
@@ -191,7 +239,7 @@ def _unique_json(raw: bytes, *, code: str, message: str) -> object:
 
 def _load_cluster_runner(
     path_value: object,
-) -> tuple[DesktopSSHSlurmRunner, ClusterProfile, str, str | None]:
+) -> tuple[DesktopSSHSlurmRunner, ClusterProfile, str, str | None, str | None]:
     try:
         raw = _read_regular_file(
             path_value, limit=MAX_CONNECTION_BYTES, label="cluster_config_path",
@@ -209,21 +257,25 @@ def _load_cluster_runner(
         if not isinstance(data, dict) or set(data) not in (
             {"profile", "username"},
             {"profile", "username", "profiles_sha256"},
+            {"profile", "username", "profiles_sha256", "catalog_sha256"},
         ):
             raise ValueError
         profile = ClusterProfile.from_mapping(data["profile"])
         username = validate_username(data["username"])
         fingerprint = data.get("profiles_sha256")
-        if fingerprint is not None and (
-            not isinstance(fingerprint, str) or len(fingerprint) != 64
-            or any(char not in "0123456789abcdef" for char in fingerprint)
-        ):
-            raise ValueError
+        catalog_fingerprint = data.get("catalog_sha256")
+        for value in (fingerprint, catalog_fingerprint):
+            if value is not None and (
+                not isinstance(value, str) or len(value) != 64
+                or any(char not in "0123456789abcdef" for char in value)
+            ):
+                raise ValueError
         return (
             DesktopSSHSlurmRunner(profile=profile, username=username),
             profile,
             username,
             fingerprint,
+            catalog_fingerprint,
         )
     except (ValueError, TypeError, DesktopSSHUnavailableError):
         raise SidecarError(
@@ -304,8 +356,41 @@ def _write_private_profiles(path_value: object, profiles: StaticProfiles) -> str
         ) from None
 
 
+def _write_private_catalog(path_value: object, catalog: ServerCatalog) -> str:
+    import yaml
+
+    path = _absolute_path(path_value, label="catalog_path")
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if path.exists() and path.is_symlink():
+            raise OSError("catalog path cannot be a link")
+        payload = yaml.safe_dump(
+            catalog.model_dump(mode="json"), allow_unicode=True, sort_keys=False,
+        ).encode("utf-8")
+        if len(payload) > MAX_CATALOG_BYTES:
+            raise OSError("managed catalog exceeds the size limit")
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent,
+        )
+        temporary = Path(temporary_name)
+        try:
+            os.chmod(temporary, 0o600)
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return hashlib.sha256(payload).hexdigest()
+    except OSError:
+        raise SidecarError(
+            "CATALOG_UNAVAILABLE", "The desktop software catalog could not be saved",
+        ) from None
+
+
 def _submission_service(values: dict[str, object]) -> SubmissionService:
-    runner, _, _, expected_profiles = _load_cluster_runner(values["cluster_config_path"])
+    runner, _, _, expected_profiles, _ = _load_cluster_runner(values["cluster_config_path"])
     profiles = _load_profiles(
         values["profiles_path"], expected_sha256=expected_profiles,
     )
@@ -473,9 +558,10 @@ def dispatch(method: str, params: object) -> dict[str, object]:
             "product": PRODUCT_NAME,
             "protocol_version": PROTOCOL_VERSION,
             "capabilities": [
-                "scan_project", "validate_job", "render_job", "list_profiles",
+                "scan_project", "validate_job", "render_job", "review_job", "list_profiles", "list_catalog",
                 "configure_cluster", "cluster_snapshot", "recommend_job", "create_job", "list_jobs",
                 "get_job", "submit_job", "refresh_job",
+                "browse_remote_directory",
             ],
             "submission_supported": True,
             # Runtime readiness is reported only after validating the explicit
@@ -483,12 +569,15 @@ def dispatch(method: str, params: object) -> dict[str, object]:
             "submission_enabled": False,
         }
     if method == "runtime_status":
-        values = _exact_params(params, {"cluster_config_path", "profiles_path"})
+        values = _exact_params(
+            params, {"cluster_config_path", "profiles_path", "catalog_path"},
+        )
         problems = []
         cluster = None
         expected_profiles = None
+        expected_catalog = None
         try:
-            _, cluster, username, expected_profiles = _load_cluster_runner(
+            _, cluster, username, expected_profiles, expected_catalog = _load_cluster_runner(
                 values["cluster_config_path"],
             )
         except SidecarError as exc:
@@ -501,9 +590,21 @@ def dispatch(method: str, params: object) -> dict[str, object]:
         except SidecarError as exc:
             profiles = None
             problems.append(str(exc))
+        if profiles is not None:
+            try:
+                catalog = _load_catalog(
+                    values["catalog_path"], profiles=profiles,
+                    expected_sha256=expected_catalog,
+                )
+            except SidecarError as exc:
+                catalog = None
+                problems.append(str(exc))
+        else:
+            catalog = None
         return {
             "cluster_configured": cluster is not None,
             "profiles_configured": profiles is not None,
+            "catalog_configured": catalog is not None,
             "submission_enabled": cluster is not None and profiles is not None,
             "cluster": None if cluster is None else {
                 "id": cluster.id,
@@ -520,11 +621,23 @@ def dispatch(method: str, params: object) -> dict[str, object]:
                 None if profiles is None or cluster is None
                 else profile_source(profiles, cluster.host)
             ),
+            "catalog_counts": None if catalog is None else {
+                "environments": len(catalog.environments),
+                "software": len(catalog.software),
+                "compilers": len(catalog.compilers),
+            },
+            "catalog_source": (
+                None if catalog is None or cluster is None or profiles is None
+                else catalog_source(catalog, cluster.host, profiles)
+            ),
             "problems": problems,
         }
     if method == "configure_cluster":
         values = _exact_params(
-            params, {"cluster_config_path", "profiles_path", "profile", "username"},
+            params, {
+                "cluster_config_path", "profiles_path", "catalog_path",
+                "profile", "username",
+            },
         )
         try:
             profile = ClusterProfile.from_mapping(values["profile"])
@@ -536,10 +649,13 @@ def dispatch(method: str, params: object) -> dict[str, object]:
             ) from None
         profiles, source = managed_profiles(profile.host)
         fingerprint = _write_private_profiles(values["profiles_path"], profiles)
+        catalog, catalog_mode = managed_catalog(profile.host, profiles)
+        catalog_fingerprint = _write_private_catalog(values["catalog_path"], catalog)
         _write_private_json(values["cluster_config_path"], {
             "profile": profile.to_mapping(),
             "username": username,
             "profiles_sha256": fingerprint,
+            "catalog_sha256": catalog_fingerprint,
         })
         return {
             "saved": True,
@@ -552,6 +668,12 @@ def dispatch(method: str, params: object) -> dict[str, object]:
             "profile_counts": {
                 "environments": len(profiles.environments),
                 "launchers": len(profiles.launchers),
+            },
+            "catalog_source": catalog_mode,
+            "catalog_counts": {
+                "environments": len(catalog.environments),
+                "software": len(catalog.software),
+                "compilers": len(catalog.compilers),
             },
         }
     if method == "scan_project":
@@ -588,13 +710,61 @@ def dispatch(method: str, params: object) -> dict[str, object]:
         except ValidationError as exc:
             raise SidecarError("JOB_SPEC_INVALID", _validation_message(exc)) from None
         profiles = _load_profiles(values["profiles_path"])
-        try:
-            script = render_job_script(spec, profiles=profiles)
-        except JobSpecValidationError as exc:
-            raise SidecarError("JOB_SPEC_NOT_RENDERABLE", "; ".join(exc.issues[:30])) from None
+        script, review_sha256 = _render(spec, profiles)
         return {
             "job_spec": spec.model_dump(mode="json"),
             "script": script,
+            "review_sha256": review_sha256,
+            "submission_enabled": False,
+        }
+    if method == "review_job":
+        values = _exact_params(
+            params, {"job_spec", "profiles_path", "catalog_path", "software_id"},
+        )
+        try:
+            spec = JobSpec.model_validate(values["job_spec"])
+        except ValidationError as exc:
+            raise SidecarError("JOB_SPEC_INVALID", _validation_message(exc)) from None
+        software_id = values["software_id"]
+        if software_id is not None and not isinstance(software_id, str):
+            raise SidecarError("INVALID_PARAMS", "software_id must be a string or null")
+        profiles = _load_profiles(values["profiles_path"])
+        catalog = _load_catalog(values["catalog_path"], profiles=profiles)
+        software = catalog.software_by_id(software_id) if software_id else None
+        if software_id and software is None:
+            raise SidecarError("CATALOG_ITEM_NOT_FOUND", "The selected software is not registered")
+        if software is not None:
+            mismatches = []
+            if software.executable != spec.run_step.executable:
+                mismatches.append("executable")
+            if software.run_type != spec.run_type:
+                mismatches.append("run_type")
+            if software.environment_profile and (
+                software.environment_profile.id != spec.environment_profile.id
+                or software.environment_profile.version != spec.environment_profile.version
+            ):
+                mismatches.append("environment_profile")
+            if mismatches:
+                raise SidecarError(
+                    "CATALOG_MISMATCH",
+                    "The draft no longer matches the selected software: " + ", ".join(mismatches),
+                )
+        script, review_sha256 = _render(spec, profiles)
+        environment = catalog.environment(spec.environment_profile)
+        return {
+            "job_spec": spec.model_dump(mode="json"),
+            "script": script,
+            "review_sha256": review_sha256,
+            "software": None if software is None else {
+                "id": software.id,
+                "verification_status": software.verification_status,
+                "verification_scope": software.verification_scope,
+            },
+            "environment": None if environment is None else {
+                "id": environment.id,
+                "verification_status": environment.verification_status,
+                "verification_scope": environment.verification_scope,
+            },
             "submission_enabled": False,
         }
     if method == "list_profiles":
@@ -616,9 +786,74 @@ def dispatch(method: str, params: object) -> dict[str, object]:
                 ),
             } for item in profiles.launchers],
         }
+    if method == "list_catalog":
+        values = _exact_params(params, {"profiles_path", "catalog_path"})
+        profiles = _load_profiles(values["profiles_path"])
+        catalog = _load_catalog(values["catalog_path"], profiles=profiles)
+        return {
+            "metadata": catalog.metadata.model_dump(mode="json"),
+            "environments": [{
+                "id": item.id,
+                "display_name": item.display_name,
+                "version": item.version,
+                "verification_status": item.verification_status,
+                "last_verified_at": (
+                    item.last_verified_at.isoformat() if item.last_verified_at else None
+                ),
+                "verification_scope": item.verification_scope,
+                "python_executable": item.python_executable,
+                "environment_profile": (
+                    item.environment_profile.model_dump(mode="json")
+                    if item.environment_profile else None
+                ),
+                "available_partitions": item.available_partitions,
+                "capabilities": (
+                    item.capabilities.model_dump(mode="json") if item.capabilities else None
+                ),
+            } for item in catalog.environments],
+            "software": [{
+                "id": item.id,
+                "display_name": item.display_name,
+                "version": item.version,
+                "aliases": list(item.aliases),
+                "executable": item.executable,
+                "environment_profile": (
+                    item.environment_profile.model_dump(mode="json")
+                    if item.environment_profile else None
+                ),
+                "run_type": item.run_type,
+                "parallelism": list(item.parallelism),
+                "compatible_partitions": item.compatible_partitions,
+                "launch_profile": (
+                    item.launch_profile.model_dump(mode="json")
+                    if item.launch_profile else None
+                ),
+                "verification_status": item.verification_status,
+                "last_verified_at": (
+                    item.last_verified_at.isoformat() if item.last_verified_at else None
+                ),
+                "verification_scope": item.verification_scope,
+            } for item in catalog.software],
+            "compilers": [{
+                "id": item.id,
+                "display_name": item.display_name,
+                "version": item.version,
+                "kind": item.kind,
+                "executable": item.executable,
+                "environment_profile": (
+                    item.environment_profile.model_dump(mode="json")
+                    if item.environment_profile else None
+                ),
+                "verification_status": item.verification_status,
+                "last_verified_at": (
+                    item.last_verified_at.isoformat() if item.last_verified_at else None
+                ),
+                "verification_scope": item.verification_scope,
+            } for item in catalog.compilers],
+        }
     if method == "cluster_snapshot":
         values = _exact_params(params, {"cluster_config_path"})
-        runner, _, username, _ = _load_cluster_runner(values["cluster_config_path"])
+        runner, _, username, _, _ = _load_cluster_runner(values["cluster_config_path"])
         try:
             snapshot = ClusterService(
                 SlurmClusterClient(runner=runner), current_user=username,
@@ -629,8 +864,21 @@ def dispatch(method: str, params: object) -> dict[str, object]:
                 "The cluster snapshot is unavailable; verify network, host key, and system OpenSSH authentication",
             ) from None
         return _snapshot_view(snapshot)
+    if method == "browse_remote_directory":
+        values = _exact_params(params, {"cluster_config_path", "path"})
+        runner, _, _, _, _ = _load_cluster_runner(values["cluster_config_path"])
+        try:
+            return runner.list_directory(values["path"], timeout=15)
+        except (DesktopSSHDirectoryError, ValueError):
+            raise SidecarError(
+                "REMOTE_DIRECTORY_UNAVAILABLE",
+                "The selected remote directory is unavailable; check the absolute path and SSH access",
+            ) from None
     if method == "recommend_job":
-        values = _exact_params(params, {"job_spec", "profiles_path", "cluster_config_path", "preference"})
+        values = _exact_params(params, {
+            "job_spec", "profiles_path", "catalog_path", "cluster_config_path",
+            "preference", "software_id", "consider_all_partitions",
+        })
         try:
             spec = JobSpec.model_validate(values["job_spec"])
             preference = UserPreference(values["preference"])
@@ -638,18 +886,46 @@ def dispatch(method: str, params: object) -> dict[str, object]:
             raise SidecarError("JOB_SPEC_INVALID", _validation_message(exc)) from None
         except (ValueError, TypeError):
             raise SidecarError("INVALID_PARAMS", "preference is invalid") from None
-        runner, _, username, expected_profiles = _load_cluster_runner(
+        software_id = values["software_id"]
+        if software_id is not None and not isinstance(software_id, str):
+            raise SidecarError("INVALID_PARAMS", "software_id must be a string or null")
+        consider_all = values["consider_all_partitions"]
+        if type(consider_all) is not bool:
+            raise SidecarError("INVALID_PARAMS", "consider_all_partitions must be a boolean")
+        runner, _, username, expected_profiles, expected_catalog = _load_cluster_runner(
             values["cluster_config_path"],
         )
         profiles = _load_profiles(
             values["profiles_path"], expected_sha256=expected_profiles,
         )
+        catalog = _load_catalog(
+            values["catalog_path"], profiles=profiles,
+            expected_sha256=expected_catalog,
+        )
+        software = catalog.software_by_id(software_id) if software_id else None
+        if software_id and software is None:
+            raise SidecarError("CATALOG_ITEM_NOT_FOUND", "The selected software is not registered")
+        requested_resources = spec.resources.model_dump(mode="json")
+        if consider_all:
+            requested_resources["partition"] = None
+        request = RecommendationRequest.model_validate({
+            "run_type": spec.run_type,
+            "environment_profile": spec.environment_profile.model_dump(mode="json"),
+            "launcher_profile": (
+                spec.run_step.launcher_profile.model_dump(mode="json")
+                if spec.run_step.launcher_profile else None
+            ),
+            "resources": requested_resources,
+            "catalog_compatibility": compatibility(
+                software, catalog.environment(spec.environment_profile),
+            ).model_dump(mode="json"),
+        })
         try:
             snapshot = ClusterService(
                 SlurmClusterClient(runner=runner), current_user=username,
             ).get_snapshot()
             report = ResourceRecommender().recommend(
-                spec=spec, snapshot=snapshot, profiles=profiles,
+                spec=request, snapshot=snapshot, profiles=profiles,
                 preference=preference, as_of=datetime.now(timezone.utc),
             )
         except ClusterUnavailableError:
@@ -661,7 +937,10 @@ def dispatch(method: str, params: object) -> dict[str, object]:
             raise SidecarError("RECOMMENDATION_UNAVAILABLE", str(exc)) from None
         return _recommendation_view(report)
     if method == "create_job":
-        values = _exact_params(params, {"job_spec", "name", "profiles_path", "database_path", "submission_root"})
+        values = _exact_params(params, {
+            "job_spec", "name", "profiles_path", "database_path",
+            "submission_root", "review_sha256",
+        })
         name = values["name"]
         if name is not None and (not isinstance(name, str) or not name.strip() or not name.isprintable()):
             raise SidecarError("INVALID_PARAMS", "name must be null or printable nonblank text")
@@ -670,6 +949,18 @@ def dispatch(method: str, params: object) -> dict[str, object]:
         except ValidationError as exc:
             raise SidecarError("JOB_SPEC_INVALID", _validation_message(exc)) from None
         profiles = _load_profiles(values["profiles_path"])
+        review_sha256 = values["review_sha256"]
+        if (
+            not isinstance(review_sha256, str)
+            or len(review_sha256) != 64
+            or any(char not in "0123456789abcdef" for char in review_sha256)
+        ):
+            raise SidecarError("REVIEW_REQUIRED", "A valid script review token is required")
+        _, expected_review = _render(spec, profiles)
+        if not hmac.compare_digest(review_sha256, expected_review):
+            raise SidecarError(
+                "REVIEW_CHANGED", "The task changed after preview; render and review it again",
+            )
         repository = _repository(values["database_path"])
         try:
             root = _absolute_path(values["submission_root"], label="submission_root")

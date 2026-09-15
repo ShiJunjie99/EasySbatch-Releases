@@ -11,6 +11,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 import os
 from pathlib import Path
+from pathlib import PurePosixPath
+import json
 import shlex
 import shutil
 import stat
@@ -24,10 +26,80 @@ from .runner import CommandResult, SlurmCommandError, _validate_timeout
 
 MAX_SCRIPT_BYTES = 2 * 1024 * 1024
 MAX_COMMAND_OUTPUT_BYTES = 2 * 1024 * 1024
+MAX_DIRECTORY_ENTRIES = 500
+
+_DIRECTORY_SCRIPT = r'''import json, os, stat, sys
+p = sys.argv[1]
+s = os.lstat(p)
+if stat.S_ISLNK(s.st_mode) or not stat.S_ISDIR(s.st_mode):
+    raise SystemExit(41)
+rows = []
+truncated = False
+with os.scandir(p) as stream:
+    for entry in stream:
+        if len(rows) >= 500:
+            truncated = True
+            break
+        try:
+            info = entry.stat(follow_symlinks=False)
+            mode = info.st_mode
+            kind = "directory" if stat.S_ISDIR(mode) else "file" if stat.S_ISREG(mode) else "link" if stat.S_ISLNK(mode) else "other"
+            rows.append({"name": entry.name, "kind": kind, "size": info.st_size if kind == "file" else None, "modified_ns": info.st_mtime_ns})
+        except OSError:
+            rows.append({"name": entry.name, "kind": "unavailable", "size": None, "modified_ns": None})
+rows.sort(key=lambda row: (row["kind"] != "directory", row["name"].casefold(), row["name"]))
+print(json.dumps({"path": p, "entries": rows, "truncated": truncated}, ensure_ascii=False, separators=(",", ":")))'''
 
 
 class DesktopSSHUnavailableError(RuntimeError):
     """The configured credential-free desktop SSH transport is unavailable."""
+
+
+class DesktopSSHDirectoryError(RuntimeError):
+    """A bounded, user-requested remote directory could not be listed."""
+
+
+def _remote_directory_path(value: str) -> str:
+    if (
+        not isinstance(value, str) or len(value) > 1024 or not value.isprintable()
+        or "\x00" in value or "\\" in value or value == "/"
+    ):
+        raise ValueError("remote directory must be a printable non-root absolute POSIX path")
+    path = PurePosixPath(value)
+    if not path.is_absolute() or str(path) != value or ".." in path.parts:
+        raise ValueError("remote directory must be a normalized absolute POSIX path")
+    return value
+
+
+def _directory_result(raw: bytes, expected_path: str) -> dict[str, object]:
+    try:
+        data = json.loads(_decode(raw))
+    except (UnicodeError, json.JSONDecodeError):
+        raise DesktopSSHDirectoryError("Remote directory response was invalid") from None
+    if not isinstance(data, dict) or set(data) != {"path", "entries", "truncated"}:
+        raise DesktopSSHDirectoryError("Remote directory response was invalid")
+    rows = data["entries"]
+    if data["path"] != expected_path or not isinstance(data["truncated"], bool) or not isinstance(rows, list):
+        raise DesktopSSHDirectoryError("Remote directory response was invalid")
+    if len(rows) > MAX_DIRECTORY_ENTRIES:
+        raise DesktopSSHDirectoryError("Remote directory response exceeded the entry limit")
+    clean = []
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {"name", "kind", "size", "modified_ns"}:
+            raise DesktopSSHDirectoryError("Remote directory response was invalid")
+        name, kind = row["name"], row["kind"]
+        if (
+            not isinstance(name, str) or not name or name in {".", ".."}
+            or "/" in name or "\x00" in name or not name.isprintable()
+            or kind not in {"directory", "file", "link", "other", "unavailable"}
+        ):
+            raise DesktopSSHDirectoryError("Remote directory response was invalid")
+        for field in ("size", "modified_ns"):
+            value = row[field]
+            if value is not None and (type(value) is not int or value < 0):
+                raise DesktopSSHDirectoryError("Remote directory response was invalid")
+        clean.append(dict(row))
+    return {"path": expected_path, "entries": clean, "truncated": data["truncated"]}
 
 
 def _decode(data: bytes) -> str:
@@ -185,3 +257,29 @@ class DesktopSSHSlurmRunner:
             result = CommandResult(original, completed.returncode, "", "")
             raise SlurmCommandError("Remote Slurm response exceeded the desktop size limit", result)
         return CommandResult(original, completed.returncode, _decode(stdout), _decode(stderr))
+
+    def list_directory(self, path: str, *, timeout: float = 15) -> dict[str, object]:
+        """List one user-selected remote directory without reading file contents."""
+        _validate_timeout(timeout)
+        path = _remote_directory_path(path)
+        command = ("python3", "-c", _DIRECTORY_SCRIPT, path)
+        try:
+            completed = self._process_run(
+                list(self._ssh_argv(command)),
+                input=None,
+                capture_output=True,
+                timeout=timeout,
+                check=False,
+                env=sanitized_environment(os.environ),
+            )
+        except subprocess.TimeoutExpired:
+            raise DesktopSSHDirectoryError("Remote directory request timed out") from None
+        except OSError:
+            raise DesktopSSHDirectoryError("System OpenSSH could not be started") from None
+        stdout = completed.stdout if isinstance(completed.stdout, bytes) else str(completed.stdout or "").encode()
+        stderr = completed.stderr if isinstance(completed.stderr, bytes) else str(completed.stderr or "").encode()
+        if len(stdout) > MAX_COMMAND_OUTPUT_BYTES or len(stderr) > MAX_COMMAND_OUTPUT_BYTES:
+            raise DesktopSSHDirectoryError("Remote directory response exceeded the size limit")
+        if completed.returncode != 0:
+            raise DesktopSSHDirectoryError("Remote directory is unavailable or is not a regular directory")
+        return _directory_result(stdout, path)
