@@ -1,0 +1,73 @@
+name: publish-beta-release
+
+on:
+  push:
+    tags:
+      - "v*-beta.*"
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: publish-beta-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  VERIFIED_BUILD_RUN_ID: "34921335178"
+
+jobs:
+  publish:
+    if: github.repository == 'ShiJunjie99/EasySbatch-Releases'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download verified Windows artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: Beta-EasySbatch-Windows-x64-unsigned
+          path: downloaded/windows
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.VERIFIED_BUILD_RUN_ID }}
+
+      - name: Download verified Apple Silicon artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: Beta-EasySbatch-macOS-arm64-unsigned
+          path: downloaded/macos
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.VERIFIED_BUILD_RUN_ID }}
+
+      - name: Stage release assets and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t windows_installers < <(find downloaded/windows -maxdepth 1 -type f -name '*.exe' -print)
+          mapfile -t macos_images < <(find downloaded/macos -maxdepth 1 -type f -name '*.dmg' -print)
+          mapfile -t macos_archives < <(find downloaded/macos -maxdepth 1 -type f -name '*.zip' -print)
+          test "${#windows_installers[@]}" -eq 1
+          test "${#macos_images[@]}" -eq 1
+          test "${#macos_archives[@]}" -eq 1
+
+          mkdir -p release-assets
+          install -m 0644 "${windows_installers[0]}" \
+            "release-assets/Beta-EasySbatch-${GITHUB_REF_NAME}-Windows-x64-unsigned.exe"
+          install -m 0644 "${macos_images[0]}" \
+            "release-assets/Beta-EasySbatch-${GITHUB_REF_NAME}-macOS-arm64-unsigned.dmg"
+          install -m 0644 "${macos_archives[0]}" \
+            "release-assets/Beta-EasySbatch-${GITHUB_REF_NAME}-macOS-arm64-unsigned.zip"
+          (cd release-assets && sha256sum Beta-EasySbatch-* > SHA256SUMS)
+
+      - name: Publish GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release-assets/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Beta EasySbatch $GITHUB_REF_NAME" \
+            --notes-file desktop/release-notes/v0.1.0-beta.1.md \
+            --prerelease \
+            --verify-tag
