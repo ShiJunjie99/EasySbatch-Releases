@@ -1,7 +1,7 @@
 # Beta EasySbatch public build snapshot
 
 This branch is the public build snapshot corresponding to private development
-commit `450c2d6`. It exists so GitHub's native Windows x64 and Apple Silicon
+commit `5f203d8`. It exists so GitHub's native Windows x64 and Apple Silicon
 macOS runners can produce unsigned Beta EasySbatch test artifacts without a
 local full build.
 
