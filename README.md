@@ -86,7 +86,8 @@ See [SECURITY_MODEL.md](SECURITY_MODEL.md) and [SECURITY.md](SECURITY.md).
 ```
 
 Use only synthetic users and credentials in tests. The desktop Beta has one
-explicit public preset for `10.158.132.77`; it contains cluster-wide shared
+explicit public preset selected only when the IP is `10.158.132.77` and the
+port is `3088`; it contains cluster-wide shared
 loading steps only. Keep user-specific paths and environments, full real
 catalogs, databases, runs, logs, project inputs, and other deployment profiles
 under the ignored `deployment-private/` directory or outside the repository.

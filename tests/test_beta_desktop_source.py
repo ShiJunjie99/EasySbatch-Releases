@@ -87,7 +87,13 @@ def test_product_ui_owns_history_cluster_and_explicit_submission():
     assert "callCore('review_job'" in tool
     assert "consider_all_partitions" in tool
     assert "name: 'easysbatch_submit_job'" not in tool
-    assert "保存、自动配置并测试" in client
+    assert "登录并连接" in client
+    assert 'type="password"' in client
+    assert "inspectSshHostKey" in client
+    assert "服务器 IP 为 10.158.132.77" in client
+    assert "SSH 端口为 3088" in client
+    assert "@Remote('inspectSshHostKey')" in host
+    assert "callCore('connect_cluster'" in host
     assert "10.158.132.77" in client
     assert "profiles_path: paths().profilesPath" in host
     assert "catalog_path: paths().catalogPath" in host

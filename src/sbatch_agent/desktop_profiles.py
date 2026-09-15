@@ -14,6 +14,7 @@ from .profiles import StaticProfiles
 
 
 KNOWN_CLUSTER_HOST = "10.158.132.77"
+KNOWN_CLUSTER_PORT = 3088
 ProfileSource = Literal["known_cluster", "cluster_discovery", "custom"]
 
 
@@ -142,17 +143,18 @@ KNOWN_CLUSTER_PROFILES = _known_cluster_profiles()
 DISCOVERED_CLUSTER_PROFILES = _discovered_cluster_profiles()
 
 
-def managed_profiles(host: str) -> tuple[StaticProfiles, ProfileSource]:
+def managed_profiles(host: str, ssh_port: int) -> tuple[StaticProfiles, ProfileSource]:
     """Return the audited shared preset or the non-guessing fallback."""
-    if host == KNOWN_CLUSTER_HOST:
+    if (host, ssh_port) == (KNOWN_CLUSTER_HOST, KNOWN_CLUSTER_PORT):
         return KNOWN_CLUSTER_PROFILES.model_copy(deep=True), "known_cluster"
     return DISCOVERED_CLUSTER_PROFILES.model_copy(deep=True), "cluster_discovery"
 
 
-def profile_source(profiles: StaticProfiles, host: str) -> ProfileSource:
+def profile_source(profiles: StaticProfiles, host: str, ssh_port: int) -> ProfileSource:
     """Classify a loaded document without trusting comments or sidecar state."""
-    if host == KNOWN_CLUSTER_HOST and profiles == KNOWN_CLUSTER_PROFILES:
+    known_endpoint = (host, ssh_port) == (KNOWN_CLUSTER_HOST, KNOWN_CLUSTER_PORT)
+    if known_endpoint and profiles == KNOWN_CLUSTER_PROFILES:
         return "known_cluster"
-    if host != KNOWN_CLUSTER_HOST and profiles == DISCOVERED_CLUSTER_PROFILES:
+    if not known_endpoint and profiles == DISCOVERED_CLUSTER_PROFILES:
         return "cluster_discovery"
     return "custom"

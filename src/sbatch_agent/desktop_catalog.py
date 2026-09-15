@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from .desktop_profiles import KNOWN_CLUSTER_HOST
+from .desktop_profiles import KNOWN_CLUSTER_HOST, KNOWN_CLUSTER_PORT
 from .profiles import StaticProfiles
 from .server_catalog import ServerCatalog
 
@@ -189,13 +189,15 @@ def _empty_catalog(profiles: StaticProfiles) -> ServerCatalog:
 
 
 def managed_catalog(
-    host: str, profiles: StaticProfiles,
+    host: str, ssh_port: int, profiles: StaticProfiles,
 ) -> tuple[ServerCatalog, CatalogSource]:
-    if host == KNOWN_CLUSTER_HOST:
+    if (host, ssh_port) == (KNOWN_CLUSTER_HOST, KNOWN_CLUSTER_PORT):
         return _known_catalog(profiles), "known_cluster"
     return _empty_catalog(profiles), "cluster_discovery"
 
 
-def catalog_source(catalog: ServerCatalog, host: str, profiles: StaticProfiles) -> CatalogSource:
-    expected, source = managed_catalog(host, profiles)
+def catalog_source(
+    catalog: ServerCatalog, host: str, ssh_port: int, profiles: StaticProfiles,
+) -> CatalogSource:
+    expected, source = managed_catalog(host, ssh_port, profiles)
     return source if catalog == expected else "custom"

@@ -1,11 +1,15 @@
 import io
+import base64
+import hashlib
 import json
 from pathlib import Path
 import sys
+from datetime import datetime, timezone
 
 import yaml
 
 from sbatch_agent.desktop_sidecar import PROTOCOL_VERSION, dispatch, handle_request, run_stream
+from sbatch_agent.cluster_models import ClusterSnapshot
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -234,9 +238,74 @@ def test_cluster_configuration_contains_no_credentials_and_enables_runtime_metad
         "profiles_path": str(profiles),
         "catalog_path": str(catalog),
     })
-    assert status["submission_enabled"] is True
+    assert status["submission_enabled"] is False
+    assert status["authentication_required"] is True
     assert status["cluster"]["username"] == "student"
     assert status["profile_source"] == "cluster_discovery"
+
+
+def test_in_app_password_login_saves_no_password_and_selects_exact_endpoint(
+    tmp_path, monkeypatch,
+):
+    raw_key = b"synthetic-server-public-key"
+    host_key = {
+        "algorithm": "ssh-ed25519",
+        "public_key": base64.b64encode(raw_key).decode("ascii"),
+        "fingerprint": "SHA256:" + base64.b64encode(
+            hashlib.sha256(raw_key).digest(),
+        ).decode("ascii").rstrip("="),
+    }
+    captured = {}
+
+    class PasswordRunner:
+        def __init__(self, *, profile, username, password, host_key):
+            captured["endpoint"] = (profile.host, profile.ssh_port)
+            captured["username"] = username
+            captured["password"] = password.get_secret_value()
+            captured["fingerprint"] = host_key.fingerprint
+
+        def connect(self):
+            captured["connected"] = True
+
+        def close(self):
+            captured["closed"] = True
+
+    class SnapshotService:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def get_snapshot(self):
+            return ClusterSnapshot(
+                captured_at=datetime.now(timezone.utc),
+                cluster_name="Synthetic", current_user="student",
+                partitions=(), nodes=(), queue=None,
+            )
+
+    monkeypatch.setattr("sbatch_agent.desktop_sidecar.DesktopSSHPasswordRunner", PasswordRunner)
+    monkeypatch.setattr("sbatch_agent.desktop_sidecar.ClusterService", SnapshotService)
+    secret = "SYNTHETIC_SESSION_PASSWORD_DO_NOT_SAVE"
+    response = handle_request(request("connect_cluster", {
+        "cluster_config_path": str(tmp_path / "cluster.json"),
+        "profiles_path": str(tmp_path / "profiles.yaml"),
+        "catalog_path": str(tmp_path / "catalog.yaml"),
+        "profile": {
+            "id": "primary", "display_name": "Known cluster",
+            "host": "10.158.132.77", "ssh_port": 3088,
+        },
+        "username": "student", "host_key": host_key,
+    }) | {"authentication": {"password": secret}})
+    assert "error" not in response
+    assert response["result"]["profile_source"] == "known_cluster"
+    assert response["result"]["password_stored"] is False
+    assert captured == {
+        "endpoint": ("10.158.132.77", 3088), "username": "student",
+        "password": secret, "fingerprint": host_key["fingerprint"],
+        "connected": True, "closed": True,
+    }
+    stored_text = (tmp_path / "cluster.json").read_text(encoding="utf-8")
+    assert secret not in stored_text
+    assert secret not in json.dumps(response)
+    assert json.loads(stored_text)["host_key"]["fingerprint"] == host_key["fingerprint"]
 
 
 def test_runtime_status_reports_missing_first_run_configuration(tmp_path):
@@ -264,7 +333,7 @@ def test_known_cluster_automatically_uses_shared_audited_profiles_only(tmp_path)
             "id": "primary",
             "display_name": "Known GPU cluster",
             "host": "10.158.132.77",
-            "ssh_port": 22,
+            "ssh_port": 3088,
         },
         "username": "student",
     })
@@ -320,6 +389,20 @@ def test_known_cluster_automatically_uses_shared_audited_profiles_only(tmp_path)
         "profiles_path": str(profiles),
         "catalog_path": str(catalog),
     })["profile_source"] == "known_cluster"
+
+
+def test_known_host_on_another_port_does_not_receive_the_preset(tmp_path):
+    saved = dispatch("configure_cluster", {
+        "cluster_config_path": str(tmp_path / "cluster.json"),
+        "profiles_path": str(tmp_path / "profiles.yaml"),
+        "catalog_path": str(tmp_path / "catalog.yaml"),
+        "profile": {
+            "id": "primary", "display_name": "Different endpoint",
+            "host": "10.158.132.77", "ssh_port": 22,
+        },
+        "username": "student",
+    })
+    assert saved["profile_source"] == "cluster_discovery"
 
 
 def test_managed_profiles_cannot_change_silently_after_cluster_configuration(tmp_path):

@@ -1,27 +1,34 @@
-"""Credential-free system-OpenSSH adapter for the desktop Beta.
+"""Restricted SSH adapters for the desktop Beta.
 
-The adapter accepts only the fixed Slurm argv emitted by ``ClusterService``
-and ``SlurmClient``.  It does not expose a general remote-command API.  SSH
-keys, agents, host verification, and authentication prompts remain owned by
-the operating-system OpenSSH client.
+Both the legacy system-OpenSSH path and the in-app password path accept only
+the fixed Slurm argv emitted by ``ClusterService`` and ``SlurmClient``. Neither
+adapter exposes a general remote-command API. New desktop connections use an
+in-memory Paramiko transport after the user approves the server public key.
 """
 
 from __future__ import annotations
 
 import base64
 from collections.abc import Sequence
+from dataclasses import dataclass
+import hashlib
+import hmac
 import os
 from pathlib import Path
 from pathlib import PurePosixPath
 import json
 import shlex
 import shutil
+import socket
 import stat
 import subprocess
+import time
+
+from pydantic import SecretStr
 
 from .cluster import QUERIES
 from .cluster_profile import ClusterProfile
-from .launcher_client import sanitized_environment, validate_username
+from .launcher_client import sanitized_environment, validate_host, validate_username
 from .runner import CommandResult, SlurmCommandError, _validate_timeout
 
 
@@ -30,6 +37,10 @@ MAX_COMMAND_OUTPUT_BYTES = 2 * 1024 * 1024
 MAX_DIRECTORY_ENTRIES = 500
 MAX_REMOTE_SCAN_TEXT_BYTES = 384 * 1024
 MAX_REMOTE_SCAN_FILES = 500
+SUPPORTED_HOST_KEY_TYPES = frozenset({
+    "ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384",
+    "ecdsa-sha2-nistp521", "ssh-rsa",
+})
 
 _DIRECTORY_SCRIPT = r'''import json, os, stat, sys
 p = sys.argv[1]
@@ -173,6 +184,104 @@ class DesktopSSHDirectoryError(RuntimeError):
 
 class DesktopSSHProjectScanError(RuntimeError):
     """A bounded, user-authorized remote project scan could not be completed."""
+
+
+class DesktopSSHAuthenticationError(RuntimeError):
+    """A password-only SSH login failed without exposing server diagnostics."""
+
+
+@dataclass(frozen=True)
+class SSHHostKey:
+    """One public SSH server identity approved by the desktop user."""
+
+    algorithm: str
+    public_key: str
+    fingerprint: str
+
+    @classmethod
+    def from_key(cls, key: object) -> "SSHHostKey":
+        try:
+            algorithm = key.get_name()  # type: ignore[attr-defined]
+            raw = key.asbytes()  # type: ignore[attr-defined]
+            public_key = key.get_base64()  # type: ignore[attr-defined]
+        except Exception:
+            raise ValueError("invalid SSH host key") from None
+        if (
+            algorithm not in SUPPORTED_HOST_KEY_TYPES
+            or not isinstance(raw, bytes) or not 16 <= len(raw) <= 16 * 1024
+            or not isinstance(public_key, str) or len(public_key) > 32 * 1024
+        ):
+            raise ValueError("unsupported SSH host key")
+        fingerprint = base64.b64encode(hashlib.sha256(raw).digest()).decode("ascii").rstrip("=")
+        return cls(algorithm, public_key, f"SHA256:{fingerprint}")
+
+    @classmethod
+    def from_mapping(cls, value: object) -> "SSHHostKey":
+        if not isinstance(value, dict) or set(value) != {"algorithm", "public_key", "fingerprint"}:
+            raise ValueError("invalid SSH host key")
+        algorithm, public_key, fingerprint = (
+            value["algorithm"], value["public_key"], value["fingerprint"],
+        )
+        if (
+            algorithm not in SUPPORTED_HOST_KEY_TYPES
+            or not isinstance(public_key, str) or not isinstance(fingerprint, str)
+            or len(public_key) > 32 * 1024 or len(fingerprint) > 128
+        ):
+            raise ValueError("invalid SSH host key")
+        try:
+            raw = base64.b64decode(public_key, validate=True)
+        except ValueError:
+            raise ValueError("invalid SSH host key") from None
+        expected = "SHA256:" + base64.b64encode(hashlib.sha256(raw).digest()).decode("ascii").rstrip("=")
+        if not hmac.compare_digest(fingerprint, expected):
+            raise ValueError("SSH host key fingerprint mismatch")
+        return cls(algorithm, public_key, fingerprint)
+
+    def to_mapping(self) -> dict[str, str]:
+        return {
+            "algorithm": self.algorithm,
+            "public_key": self.public_key,
+            "fingerprint": self.fingerprint,
+        }
+
+
+def _start_ssh_transport(host: str, port: int, *, timeout: float):
+    """Start Paramiko only after input validation; import remains desktop-only."""
+    validate_host(host)
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise ValueError("invalid SSH port")
+    connection = transport = None
+    try:
+        import paramiko
+
+        connection = socket.create_connection((host, port), timeout=timeout)
+        transport = paramiko.Transport(connection)
+        transport.start_client(timeout=timeout)
+        if not transport.is_active():
+            raise OSError
+        return transport
+    except (ImportError, OSError, EOFError, socket.timeout):
+        if transport is not None:
+            transport.close()
+        elif connection is not None:
+            connection.close()
+        raise DesktopSSHUnavailableError("SSH server is unavailable") from None
+    except Exception:
+        if transport is not None:
+            transport.close()
+        elif connection is not None:
+            connection.close()
+        raise DesktopSSHUnavailableError("SSH handshake failed") from None
+
+
+def inspect_ssh_host_key(host: str, port: int, *, timeout: float = 12) -> dict[str, object]:
+    """Read a server public key before any username or password is transmitted."""
+    transport = _start_ssh_transport(host, port, timeout=timeout)
+    try:
+        key = SSHHostKey.from_key(transport.get_remote_server_key())
+        return {"host": host, "ssh_port": port, "host_key": key.to_mapping()}
+    finally:
+        transport.close()
 
 
 def _remote_directory_path(value: str) -> str:
@@ -485,5 +594,149 @@ class DesktopSSHSlurmRunner:
         if len(stdout) > MAX_COMMAND_OUTPUT_BYTES or len(stderr) > MAX_COMMAND_OUTPUT_BYTES:
             raise DesktopSSHProjectScanError("Remote project scan response exceeded the size limit")
         if completed.returncode != 0:
+            raise DesktopSSHProjectScanError("Remote project is unavailable or cannot be scanned safely")
+        return _project_scan_result(stdout, path)
+
+
+class DesktopSSHPasswordRunner:
+    """Password-only SSH adapter backed by one in-memory Paramiko transport.
+
+    The password is supplied through the local stdio protocol for the current
+    desktop session. It is never written to configuration, argv, environment,
+    logs, or the server preset.
+    """
+
+    def __init__(
+        self, *, profile: ClusterProfile, username: str, password: SecretStr,
+        host_key: SSHHostKey,
+    ):
+        if not isinstance(profile, ClusterProfile) or not isinstance(password, SecretStr):
+            raise ValueError("validated cluster profile and password are required")
+        if not isinstance(host_key, SSHHostKey):
+            raise ValueError("an approved SSH host key is required")
+        self.profile = profile
+        self.username = validate_username(username)
+        self._password = password
+        self.host_key = host_key
+        self._transport = None
+
+    def connect(self, *, timeout: float = 12) -> None:
+        if self._transport is not None and self._transport.is_active() and self._transport.is_authenticated():
+            return
+        transport = _start_ssh_transport(self.profile.host, self.profile.ssh_port, timeout=timeout)
+        try:
+            actual = SSHHostKey.from_key(transport.get_remote_server_key())
+            if (
+                actual.algorithm != self.host_key.algorithm
+                or not hmac.compare_digest(actual.public_key, self.host_key.public_key)
+            ):
+                raise DesktopSSHAuthenticationError("SSH server identity changed")
+            raw_password = self._password.get_secret_value()
+            try:
+                transport.auth_password(
+                    self.username, raw_password, event=None, fallback=True,
+                )
+            finally:
+                del raw_password
+            if not transport.is_authenticated():
+                raise DesktopSSHAuthenticationError("SSH username or password is incorrect")
+            transport.set_keepalive(5)
+            self._transport = transport
+        except DesktopSSHAuthenticationError:
+            transport.close()
+            raise
+        except Exception:
+            transport.close()
+            raise DesktopSSHAuthenticationError("SSH username or password is incorrect") from None
+
+    def close(self) -> None:
+        if self._transport is not None:
+            self._transport.close()
+            self._transport = None
+
+    def _execute(
+        self, command: tuple[str, ...], *, stdin: bytes | None, timeout: float,
+    ) -> tuple[int, bytes, bytes]:
+        _validate_timeout(timeout)
+        self.connect(timeout=min(12, timeout))
+        deadline = time.monotonic() + timeout
+        channel = None
+        try:
+            channel = self._transport.open_session(timeout=min(12, timeout))
+            channel.settimeout(min(12, timeout))
+            channel.exec_command(shlex.join(command))
+            if stdin is not None:
+                channel.sendall(stdin)
+            channel.shutdown_write()
+            stdout = bytearray()
+            stderr = bytearray()
+            while True:
+                progressed = False
+                while channel.recv_ready():
+                    stdout.extend(channel.recv(65536))
+                    progressed = True
+                    if len(stdout) > MAX_COMMAND_OUTPUT_BYTES:
+                        raise OSError("SSH output exceeded the size limit")
+                while channel.recv_stderr_ready():
+                    stderr.extend(channel.recv_stderr(65536))
+                    progressed = True
+                    if len(stderr) > MAX_COMMAND_OUTPUT_BYTES:
+                        raise OSError("SSH output exceeded the size limit")
+                if channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
+                    return channel.recv_exit_status(), bytes(stdout), bytes(stderr)
+                if time.monotonic() >= deadline:
+                    raise TimeoutError
+                if not progressed:
+                    time.sleep(0.01)
+        finally:
+            if channel is not None:
+                channel.close()
+
+    def run(self, argv: Sequence[str], *, timeout: float) -> CommandResult:
+        _validate_timeout(timeout)
+        if isinstance(argv, (str, bytes)) or not argv or any(
+            not isinstance(item, str) or "\x00" in item for item in argv
+        ):
+            raise ValueError("argv must be a nonempty string sequence without NUL")
+        original = tuple(argv)
+        command, stdin = _allowed_remote_command(original)
+        try:
+            returncode, stdout, stderr = self._execute(command, stdin=stdin, timeout=timeout)
+        except TimeoutError:
+            result = CommandResult(original, None, "", "")
+            raise SlurmCommandError(
+                f"remote {original[0]} timed out after {timeout}s; submission outcome may be unknown",
+                result,
+            ) from None
+        except (DesktopSSHAuthenticationError, DesktopSSHUnavailableError, OSError):
+            result = CommandResult(original, None, "", "")
+            raise SlurmCommandError("Password SSH connection failed", result) from None
+        return CommandResult(original, returncode, _decode(stdout), _decode(stderr))
+
+    def list_directory(self, path: str, *, timeout: float = 15) -> dict[str, object]:
+        path = _remote_directory_path(path)
+        try:
+            returncode, stdout, _ = self._execute(
+                ("python3", "-c", _DIRECTORY_SCRIPT, path), stdin=None, timeout=timeout,
+            )
+        except TimeoutError:
+            raise DesktopSSHDirectoryError("Remote directory request timed out") from None
+        except (DesktopSSHAuthenticationError, DesktopSSHUnavailableError, OSError):
+            raise DesktopSSHDirectoryError("Password SSH connection failed") from None
+        if returncode != 0:
+            raise DesktopSSHDirectoryError("Remote directory is unavailable or is not a regular directory")
+        return _directory_result(stdout, path)
+
+    def scan_project(self, path: str, *, timeout: float = 30) -> dict[str, object]:
+        path = _remote_directory_path(path)
+        try:
+            returncode, stdout, _ = self._execute(
+                ("python3", "-c", _PROJECT_SCAN_SCRIPT, path), stdin=None, timeout=timeout,
+            )
+        except TimeoutError:
+            raise DesktopSSHProjectScanError("Remote project scan timed out") from None
+        except (DesktopSSHAuthenticationError, DesktopSSHUnavailableError, OSError):
+            raise DesktopSSHProjectScanError("Password SSH connection failed") from None
+        if returncode != 0:
             raise DesktopSSHProjectScanError("Remote project is unavailable or cannot be scanned safely")
         return _project_scan_result(stdout, path)

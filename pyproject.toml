@@ -7,7 +7,13 @@ name = "sbatch-agent"
 version = "0.1.0"
 description = "AI-assisted Slurm workflow for HPC users"
 requires-python = ">=3.11"
-dependencies = ["pydantic>=2.7,<3", "keyring>=25,<26", "certifi>=2024", "PyYAML>=6,<7"]
+dependencies = [
+    "pydantic>=2.7,<3",
+    "keyring>=25,<26",
+    "certifi>=2024",
+    "PyYAML>=6,<7",
+    "paramiko>=3.5,<4",
+]
 
 [project.scripts]
 easysbatch-launcher = "sbatch_agent.launcher:main"

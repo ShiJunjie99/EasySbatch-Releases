@@ -38,7 +38,13 @@ choices, and manual status refresh. They do not expose Shell, arbitrary filesyst
 search, skills, todos, goals, workflows, or subagents. DSH telemetry,
 third-party desktop plugins, and automatic updates are disabled.
 
-Cluster access uses the operating system's OpenSSH executable in batch mode.
+Cluster access uses the application's restricted Paramiko SSH client. The user
+enters the server IP, SSH port, Linux username, and password in separate desktop
+panel. Before any username or password is transmitted, the app reads the
+server public key and asks the user to approve its SHA-256 fingerprint on first
+use or whenever that identity changes. The approved public key is stored with
+the non-secret connection metadata; the password exists only in memory for the
+current app session and is cleared on exit.
 Only the fixed `sinfo`, `squeue`, `scontrol`, `sacct`, and `sbatch --parsable`
 forms already used by the Web version are allowed for job operations. The
 user-driven task form has separate fixed, read-only directory-listing and
@@ -46,10 +52,10 @@ project-scanning calls. Listing returns at most 500 names and metadata items.
 Scanning reads at most 384 KiB of relevant UTF-8 project text, skips links,
 binaries, generated directories, and oversized files, and saves only bounded
 evidence in the local product state. Only the user can select the remote path;
-the model can read the active evidence but cannot supply another path. The application never reads
-or stores a password or private key; host verification, keys, and ssh-agent
-remain under OpenSSH. The reviewed script is sent to `sbatch` over standard
-input, so a local application path is never interpreted as a remote path.
+the model can read the active evidence but cannot supply another path. The
+application never stores a password or private key. The reviewed script is sent
+to `sbatch` over the authenticated SSH channel, so a local application path is
+never interpreted as a remote path.
 
 Model credentials currently use DSH's local credential store inside this
 product's isolated user-data directory. The legacy launcher's operating-system
@@ -83,18 +89,22 @@ and file preview; `JobSpec.project_dir` and `work_dir` remain explicit POSIX
 paths on the cluster. Beta never uploads local files or writes project content
 to the cluster.
 
-Open **Cluster resources** and enter the cluster display name, host, SSH port,
-and Linux username. This writes non-secret metadata to `harness/cluster.json`;
-the in-app form never asks for a password or key. Before testing the connection,
-run the operating-system `ssh` command once so the user can verify the host
-fingerprint and make key/ssh-agent authentication available.
+Open **Cluster resources** and enter the cluster display name, server IP, SSH port,
+Linux username, and password. Click **Login and connect**. The first connection
+shows the server's SHA-256 host-key fingerprint inside the app; confirm it only
+after comparing it with the value supplied by the cluster administrator. No
+terminal command is required. Successful login writes only non-secret endpoint,
+username, approved public key, and profile fingerprints to `harness/cluster.json`.
+The password is kept only in application memory for this run and must be entered
+again after restarting the app.
 
 Saving the connection also creates the product-owned `harness/profiles.yaml`
 and `harness/server-catalog.yaml`.
-For `10.158.132.77`, Beta selects the previously audited cluster-wide shared
+When the server IP is `10.158.132.77` and the SSH port is `3088`, Beta selects
+the previously audited cluster-wide shared
 environments. Personal paths and environments are intentionally excluded. Its
 catalog contains shared GROMACS, TOPS, SCFT, and toolchain facts with their
-original verification status. For any other host, Beta creates a no-command
+original verification status. For any other IP and port combination, Beta creates a no-command
 `cluster-default` environment and an empty software catalog instead of guessing
 modules, Conda paths, or installed software. In both cases,
 partitions, nodes, CPU/GPU capacity, and queue state are read live from Slurm;
@@ -114,9 +124,12 @@ Expected checks:
    explicit, cluster-default, or evidence-backed memory and walltime, live
    partition/layout recommendation, remote directory selection and bounded
    read-only project scanning, script preview, and local draft saving.
-4. With no `cluster.json`, the UI says the cluster is not configured and keeps
-   the submit button disabled. Saving a valid connection automatically selects
-   the known shared preset or the safe `cluster-default` fallback.
+4. With no `cluster.json`, the UI asks for IP/domain, port, Linux username, and
+   password and keeps submission disabled. The first login confirms the host
+   fingerprint inside the app and never opens a terminal. A successful login
+   automatically selects the shared preset only when the IP is `10.158.132.77`
+   and the port is `3088`, or otherwise selects the
+   safe `cluster-default` fallback. The password is absent from saved files.
 5. The model cannot choose a remote path. After the user scans a server project,
    the assistant receives only that active bounded evidence. Saving a smart
    draft re-scans the same path and refuses stale source fingerprints.

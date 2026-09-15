@@ -14,6 +14,12 @@ const PROTOCOL_VERSION = 1
 const MAX_OUTPUT_BYTES = 1024 * 1024
 const TIMEOUT_MS = 75_000
 let requestSequence = 0
+let sessionPassword: string | undefined
+
+const PASSWORD_METHODS = new Set([
+  'runtime_status', 'cluster_snapshot', 'recommend_job', 'browse_remote_directory',
+  'scan_remote_project', 'finalize_preparation', 'submit_job', 'refresh_job',
+])
 
 interface CoreResponse {
   readonly protocol_version: number
@@ -52,10 +58,33 @@ function coreEnvironment(): NodeJS.ProcessEnv {
   return Object.fromEntries(Object.entries(process.env).filter(([key]) => allowed.has(key.toUpperCase())))
 }
 
-export function callCore(method: string, params: Record<string, unknown>, signal: AbortSignal): Promise<JsonValue> {
+export function rememberSessionPassword(password: string): void {
+  if (password === '' || password.length > 1024 || /[\n\r\0]/u.test(password)) {
+    throw new Error('SSH password is invalid')
+  }
+  sessionPassword = password
+}
+
+export function clearSessionPassword(): void {
+  sessionPassword = undefined
+}
+
+export function callCore(
+  method: string,
+  params: Record<string, unknown>,
+  signal: AbortSignal,
+  passwordOverride?: string,
+): Promise<JsonValue> {
   const { command, args } = coreLaunch()
   const id = ++requestSequence
-  const request = `${JSON.stringify({ protocol_version: PROTOCOL_VERSION, id, method, params })}\n`
+  const password = passwordOverride ?? (PASSWORD_METHODS.has(method) ? sessionPassword : undefined)
+  const request = `${JSON.stringify({
+    protocol_version: PROTOCOL_VERSION,
+    id,
+    method,
+    params,
+    ...(password === undefined ? {} : { authentication: { password } }),
+  })}\n`
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       env: coreEnvironment(),
@@ -186,7 +215,7 @@ export function apply(ctx: Context): void {
   }))
   ctx.tools.register(defineTool({
     name: 'easysbatch_cluster_summary',
-    description: 'Read a fresh aggregate Slurm snapshot through the configured system-OpenSSH connection. This is read-only and never returns another user\'s job list.',
+    description: 'Read a fresh aggregate Slurm snapshot through the authenticated in-app SSH connection. This is read-only and never returns another user\'s job list.',
     parameters: {},
     output: JSON_OUTPUT,
     async execute(_args, exec) {

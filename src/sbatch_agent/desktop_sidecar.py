@@ -2,13 +2,14 @@
 
 The model-facing surface remains read-only apart from saving a local draft.
 User-driven desktop panels may also inspect the cluster, submit an already
-reviewed immutable draft, and refresh its status through the credential-free,
-fixed-command OpenSSH adapter.
+reviewed immutable draft, and refresh its status through the password-only,
+fixed-command in-app SSH adapter.
 """
 
 from __future__ import annotations
 
 import argparse
+from contextvars import ContextVar
 from dataclasses import asdict
 from datetime import datetime, timezone
 import hashlib
@@ -21,7 +22,7 @@ import sys
 import tempfile
 from typing import BinaryIO, TextIO
 
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from .cluster import ClusterService, ClusterUnavailableError, SlurmClusterClient
 from .cluster_models import ClusterSnapshot
@@ -29,8 +30,9 @@ from .cluster_profile import ClusterProfile
 from .desktop_catalog import catalog_source, managed_catalog
 from .desktop_profiles import managed_profiles, profile_source
 from .desktop_ssh import (
-    DesktopSSHDirectoryError, DesktopSSHProjectScanError, DesktopSSHSlurmRunner,
-    DesktopSSHUnavailableError,
+    DesktopSSHAuthenticationError, DesktopSSHDirectoryError,
+    DesktopSSHPasswordRunner, DesktopSSHProjectScanError,
+    DesktopSSHUnavailableError, SSHHostKey, inspect_ssh_host_key,
 )
 from .desktop_state import DesktopStateError, DesktopStateRepository
 from .launcher_client import validate_username
@@ -59,6 +61,9 @@ MAX_PROFILE_BYTES = 512 * 1024
 MAX_CATALOG_BYTES = 512 * 1024
 MAX_CONNECTION_BYTES = 16 * 1024
 MAX_RESPONSE_BYTES = 1024 * 1024
+_REQUEST_PASSWORD: ContextVar[SecretStr | None] = ContextVar(
+    "beta_easysbatch_request_password", default=None,
+)
 
 
 class SidecarError(ValueError):
@@ -241,9 +246,9 @@ def _unique_json(raw: bytes, *, code: str, message: str) -> object:
         raise SidecarError(code, message) from None
 
 
-def _load_cluster_runner(
+def _load_cluster_configuration(
     path_value: object,
-) -> tuple[DesktopSSHSlurmRunner, ClusterProfile, str, str | None, str | None]:
+) -> tuple[ClusterProfile, str, str | None, str | None, SSHHostKey | None]:
     try:
         raw = _read_regular_file(
             path_value, limit=MAX_CONNECTION_BYTES, label="cluster_config_path",
@@ -262,6 +267,7 @@ def _load_cluster_runner(
             {"profile", "username"},
             {"profile", "username", "profiles_sha256"},
             {"profile", "username", "profiles_sha256", "catalog_sha256"},
+            {"profile", "username", "profiles_sha256", "catalog_sha256", "host_key"},
         ):
             raise ValueError
         profile = ClusterProfile.from_mapping(data["profile"])
@@ -274,18 +280,33 @@ def _load_cluster_runner(
                 or any(char not in "0123456789abcdef" for char in value)
             ):
                 raise ValueError
-        return (
-            DesktopSSHSlurmRunner(profile=profile, username=username),
-            profile,
-            username,
-            fingerprint,
-            catalog_fingerprint,
-        )
+        host_key = SSHHostKey.from_mapping(data["host_key"]) if "host_key" in data else None
+        return profile, username, fingerprint, catalog_fingerprint, host_key
+    except SidecarError:
+        raise
     except (ValueError, TypeError, DesktopSSHUnavailableError):
         raise SidecarError(
             "CLUSTER_CONFIG_INVALID",
-            "The desktop cluster configuration is invalid or system OpenSSH is unavailable",
+            "The desktop cluster configuration is invalid",
         ) from None
+
+
+def _load_cluster_runner(
+    path_value: object,
+) -> tuple[DesktopSSHPasswordRunner, ClusterProfile, str, str | None, str | None]:
+    profile, username, fingerprint, catalog_fingerprint, host_key = (
+        _load_cluster_configuration(path_value)
+    )
+    password = _REQUEST_PASSWORD.get()
+    if host_key is None or password is None:
+        raise SidecarError(
+            "SSH_AUTH_REQUIRED",
+            "Enter the server IP, port, username, and password in the app to connect",
+        )
+    runner = DesktopSSHPasswordRunner(
+        profile=profile, username=username, password=password, host_key=host_key,
+    )
+    return runner, profile, username, fingerprint, catalog_fingerprint
 
 
 def _repository(path_value: object) -> JobRepository:
@@ -776,7 +797,8 @@ def dispatch(method: str, params: object) -> dict[str, object]:
             "capabilities": [
                 "scan_project", "scan_remote_project", "active_remote_scan",
                 "validate_job", "render_job", "review_job", "list_profiles", "list_catalog",
-                "configure_cluster", "cluster_snapshot", "recommend_job", "create_job", "list_jobs",
+                "inspect_ssh_host_key", "connect_cluster", "configure_cluster",
+                "cluster_snapshot", "recommend_job", "create_job", "list_jobs",
                 "get_job", "submit_job", "refresh_job",
                 "browse_remote_directory",
                 "recommend_resource_values", "start_preparation", "revise_preparation",
@@ -795,8 +817,9 @@ def dispatch(method: str, params: object) -> dict[str, object]:
         cluster = None
         expected_profiles = None
         expected_catalog = None
+        trusted_host_key = None
         try:
-            _, cluster, username, expected_profiles, expected_catalog = _load_cluster_runner(
+            cluster, username, expected_profiles, expected_catalog, trusted_host_key = _load_cluster_configuration(
                 values["cluster_config_path"],
             )
         except SidecarError as exc:
@@ -824,7 +847,14 @@ def dispatch(method: str, params: object) -> dict[str, object]:
             "cluster_configured": cluster is not None,
             "profiles_configured": profiles is not None,
             "catalog_configured": catalog is not None,
-            "submission_enabled": cluster is not None and profiles is not None,
+            "submission_enabled": (
+                cluster is not None and profiles is not None
+                and trusted_host_key is not None and _REQUEST_PASSWORD.get() is not None
+            ),
+            "authentication_required": (
+                cluster is not None
+                and (trusted_host_key is None or _REQUEST_PASSWORD.get() is None)
+            ),
             "cluster": None if cluster is None else {
                 "id": cluster.id,
                 "display_name": cluster.display_name,
@@ -838,7 +868,7 @@ def dispatch(method: str, params: object) -> dict[str, object]:
             },
             "profile_source": (
                 None if profiles is None or cluster is None
-                else profile_source(profiles, cluster.host)
+                else profile_source(profiles, cluster.host, cluster.ssh_port)
             ),
             "catalog_counts": None if catalog is None else {
                 "environments": len(catalog.environments),
@@ -847,9 +877,92 @@ def dispatch(method: str, params: object) -> dict[str, object]:
             },
             "catalog_source": (
                 None if catalog is None or cluster is None or profiles is None
-                else catalog_source(catalog, cluster.host, profiles)
+                else catalog_source(catalog, cluster.host, cluster.ssh_port, profiles)
             ),
+            "trusted_host_key": None if trusted_host_key is None else {
+                "algorithm": trusted_host_key.algorithm,
+                "fingerprint": trusted_host_key.fingerprint,
+            },
             "problems": problems,
+        }
+    if method == "inspect_ssh_host_key":
+        values = _exact_params(params, {"host", "ssh_port"})
+        try:
+            profile = ClusterProfile(
+                "inspection", "SSH server", values["host"], values["ssh_port"],
+            )
+            return inspect_ssh_host_key(profile.host, profile.ssh_port)
+        except (ValueError, TypeError):
+            raise SidecarError(
+                "CLUSTER_CONFIG_INVALID", "The SSH host or port is invalid",
+            ) from None
+        except DesktopSSHUnavailableError:
+            raise SidecarError(
+                "SSH_HOST_UNAVAILABLE", "The SSH server is unavailable or its handshake failed",
+            ) from None
+    if method == "connect_cluster":
+        values = _exact_params(
+            params, {
+                "cluster_config_path", "profiles_path", "catalog_path",
+                "profile", "username", "host_key",
+            },
+        )
+        password = _REQUEST_PASSWORD.get()
+        if password is None:
+            raise SidecarError(
+                "SSH_AUTH_REQUIRED", "Enter the SSH password for this app session",
+            )
+        try:
+            profile = ClusterProfile.from_mapping(values["profile"])
+            username = validate_username(values["username"])
+            host_key = SSHHostKey.from_mapping(values["host_key"])
+            runner = DesktopSSHPasswordRunner(
+                profile=profile, username=username, password=password, host_key=host_key,
+            )
+            runner.connect()
+            # Authentication and a fresh Slurm read happen before any connection
+            # or preset state is committed locally.
+            snapshot = ClusterService(
+                SlurmClusterClient(runner=runner), current_user=username,
+            ).get_snapshot()
+        except (ValueError, TypeError):
+            raise SidecarError(
+                "CLUSTER_CONFIG_INVALID",
+                "Cluster name, host, port, username, or approved host key is invalid",
+            ) from None
+        except DesktopSSHAuthenticationError:
+            raise SidecarError(
+                "SSH_AUTH_FAILED", "The SSH username or password is incorrect, or the server identity changed",
+            ) from None
+        except (DesktopSSHUnavailableError, ClusterUnavailableError, SubmissionServiceError):
+            raise SidecarError(
+                "CLUSTER_UNAVAILABLE", "The SSH server or Slurm resource service is unavailable",
+            ) from None
+        finally:
+            if "runner" in locals():
+                runner.close()
+        profiles, source = managed_profiles(profile.host, profile.ssh_port)
+        profiles_fingerprint = _write_private_profiles(values["profiles_path"], profiles)
+        catalog, catalog_mode = managed_catalog(profile.host, profile.ssh_port, profiles)
+        catalog_fingerprint = _write_private_catalog(values["catalog_path"], catalog)
+        _write_private_json(values["cluster_config_path"], {
+            "profile": profile.to_mapping(),
+            "username": username,
+            "profiles_sha256": profiles_fingerprint,
+            "catalog_sha256": catalog_fingerprint,
+            "host_key": host_key.to_mapping(),
+        })
+        return {
+            "saved": True,
+            "cluster": {**profile.to_mapping(), "username": username},
+            "password_stored": False,
+            "host_key": {
+                "algorithm": host_key.algorithm,
+                "fingerprint": host_key.fingerprint,
+            },
+            "profile_source": source,
+            "catalog_source": catalog_mode,
+            "snapshot": _snapshot_view(snapshot),
         }
     if method == "configure_cluster":
         values = _exact_params(
@@ -866,9 +979,9 @@ def dispatch(method: str, params: object) -> dict[str, object]:
                 "CLUSTER_CONFIG_INVALID",
                 "Cluster name, host, port, or Linux username is invalid",
             ) from None
-        profiles, source = managed_profiles(profile.host)
+        profiles, source = managed_profiles(profile.host, profile.ssh_port)
         fingerprint = _write_private_profiles(values["profiles_path"], profiles)
-        catalog, catalog_mode = managed_catalog(profile.host, profiles)
+        catalog, catalog_mode = managed_catalog(profile.host, profile.ssh_port, profiles)
         catalog_fingerprint = _write_private_catalog(values["catalog_path"], catalog)
         _write_private_json(values["cluster_config_path"], {
             "profile": profile.to_mapping(),
@@ -1056,7 +1169,7 @@ def dispatch(method: str, params: object) -> dict[str, object]:
         except (ClusterUnavailableError, SubmissionServiceError):
             raise SidecarError(
                 "CLUSTER_UNAVAILABLE",
-                "The cluster snapshot is unavailable; verify network, host key, and system OpenSSH authentication",
+                "The cluster snapshot is unavailable; verify the in-app SSH login and server identity",
             ) from None
         return _snapshot_view(snapshot)
     if method == "browse_remote_directory":
@@ -1436,8 +1549,12 @@ def _response(request_id: object, *, result: object = None, error: SidecarError 
 
 
 def handle_request(value: object) -> dict[str, object]:
-    if not isinstance(value, dict) or set(value) != {"protocol_version", "id", "method", "params"}:
-        return _response(None, error=SidecarError("INVALID_REQUEST", "Request fields must be protocol_version, id, method, and params"))
+    required = {"protocol_version", "id", "method", "params"}
+    if not isinstance(value, dict) or set(value) not in (required, required | {"authentication"}):
+        return _response(None, error=SidecarError(
+            "INVALID_REQUEST",
+            "Request fields must be protocol_version, id, method, params, and optional authentication",
+        ))
     request_id = value["id"]
     if not isinstance(request_id, (str, int)) or isinstance(request_id, bool):
         return _response(None, error=SidecarError("INVALID_REQUEST", "id must be a string or integer"))
@@ -1446,8 +1563,28 @@ def handle_request(value: object) -> dict[str, object]:
     method = value["method"]
     if not isinstance(method, str):
         return _response(request_id, error=SidecarError("INVALID_REQUEST", "method must be a string"))
+    password = None
+    if "authentication" in value:
+        authentication = value["authentication"]
+        if not isinstance(authentication, dict) or set(authentication) != {"password"}:
+            return _response(request_id, error=SidecarError(
+                "INVALID_REQUEST", "authentication must contain only password",
+            ))
+        raw_password = authentication["password"]
+        if (
+            not isinstance(raw_password, str) or not raw_password or len(raw_password) > 1024
+            or any(character in raw_password for character in ("\n", "\r", "\x00"))
+        ):
+            return _response(request_id, error=SidecarError(
+                "INVALID_REQUEST", "SSH password is invalid",
+            ))
+        password = SecretStr(raw_password)
     try:
-        return _response(request_id, result=dispatch(method, value["params"]))
+        token = _REQUEST_PASSWORD.set(password)
+        try:
+            return _response(request_id, result=dispatch(method, value["params"]))
+        finally:
+            _REQUEST_PASSWORD.reset(token)
     except SidecarError as exc:
         return _response(request_id, error=exc)
     except Exception:

@@ -3,7 +3,9 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
-import { callCore, productPaths } from '@beta-easysbatch/dsh-tool'
+import {
+  callCore, clearSessionPassword, productPaths, rememberSessionPassword,
+} from '@beta-easysbatch/dsh-tool'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -167,21 +169,32 @@ export class EasySbatchDesktop extends TypertRemoteService {
   }
 
   @Remote('configureCluster')
-  configureCluster(
+  async configureCluster(
     id: string,
     displayName: string,
     host: string,
     sshPort: number,
     username: string,
+    password: string,
+    hostKey: JsonValue,
     signal: AbortSignal,
   ): Promise<JsonValue> {
-    return callCore('configure_cluster', {
+    clearSessionPassword()
+    const result = await callCore('connect_cluster', {
       cluster_config_path: paths().clusterConfigPath,
       profiles_path: paths().profilesPath,
       catalog_path: paths().catalogPath,
       profile: { id, display_name: displayName, host, ssh_port: sshPort },
       username,
-    }, signal)
+      host_key: hostKey,
+    }, signal, password)
+    rememberSessionPassword(password)
+    return result
+  }
+
+  @Remote('inspectSshHostKey')
+  inspectSshHostKey(host: string, sshPort: number, signal: AbortSignal): Promise<JsonValue> {
+    return callCore('inspect_ssh_host_key', { host, ssh_port: sshPort }, signal)
   }
 
   @Remote('recommendJob')

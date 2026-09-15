@@ -1,6 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 import base64
+import hashlib
 import json
 
 import pytest
@@ -9,7 +10,11 @@ from sbatch_agent.cluster import QUERIES
 from sbatch_agent.cluster_profile import ClusterProfile
 from sbatch_agent.desktop_ssh import DesktopSSHSlurmRunner
 from sbatch_agent.desktop_ssh import DesktopSSHDirectoryError
+from sbatch_agent.desktop_ssh import DesktopSSHPasswordRunner
+from sbatch_agent.desktop_ssh import SSHHostKey
 from sbatch_agent.desktop_ssh import _PROJECT_SCAN_SCRIPT
+from sbatch_agent.desktop_ssh import inspect_ssh_host_key
+from pydantic import SecretStr
 
 
 def runner(tmp_path, calls):
@@ -150,3 +155,100 @@ def test_remote_project_scan_rejects_path_traversal_before_ssh(tmp_path):
     with pytest.raises(ValueError, match="remote directory"):
         transport.scan_project("/home/student/../root")
     assert calls == []
+
+
+def test_host_key_is_inspected_before_authentication(monkeypatch):
+    raw = b"synthetic-ed25519-host-key"
+
+    class Key:
+        def get_name(self):
+            return "ssh-ed25519"
+
+        def asbytes(self):
+            return raw
+
+        def get_base64(self):
+            return base64.b64encode(raw).decode("ascii")
+
+    class Transport:
+        closed = False
+
+        def get_remote_server_key(self):
+            return Key()
+
+        def close(self):
+            self.closed = True
+
+    transport = Transport()
+    monkeypatch.setattr(
+        "sbatch_agent.desktop_ssh._start_ssh_transport",
+        lambda host, port, timeout: transport,
+    )
+    result = inspect_ssh_host_key("10.158.132.77", 3088)
+    assert result["host"] == "10.158.132.77"
+    assert result["ssh_port"] == 3088
+    assert result["host_key"]["algorithm"] == "ssh-ed25519"
+    assert result["host_key"]["fingerprint"].startswith("SHA256:")
+    assert transport.closed is True
+
+
+def test_password_runner_keeps_password_out_of_command_and_reuses_transport(monkeypatch):
+    raw = b"synthetic-ed25519-host-key"
+    host_key = SSHHostKey.from_mapping({
+        "algorithm": "ssh-ed25519",
+        "public_key": base64.b64encode(raw).decode("ascii"),
+        "fingerprint": "SHA256:" + base64.b64encode(hashlib.sha256(raw).digest()).decode("ascii").rstrip("="),
+    })
+    authentication = []
+    commands = []
+
+    class Key:
+        def get_name(self): return "ssh-ed25519"
+        def asbytes(self): return raw
+        def get_base64(self): return base64.b64encode(raw).decode("ascii")
+
+    class Channel:
+        def __init__(self):
+            self.output = bytearray(b"123\n")
+
+        def settimeout(self, _timeout): pass
+        def exec_command(self, command): commands.append(command)
+        def shutdown_write(self): pass
+        def recv_ready(self): return bool(self.output)
+        def recv(self, _size):
+            result = bytes(self.output)
+            self.output.clear()
+            return result
+        def recv_stderr_ready(self): return False
+        def exit_status_ready(self): return not self.output
+        def recv_exit_status(self): return 0
+        def close(self): pass
+
+    class Transport:
+        authenticated = False
+
+        def is_active(self): return True
+        def is_authenticated(self): return self.authenticated
+        def get_remote_server_key(self): return Key()
+        def auth_password(self, username, password, **_kwargs):
+            authentication.append((username, password))
+            self.authenticated = True
+        def set_keepalive(self, _seconds): pass
+        def open_session(self, **_kwargs): return Channel()
+        def close(self): pass
+
+    transport = Transport()
+    monkeypatch.setattr(
+        "sbatch_agent.desktop_ssh._start_ssh_transport",
+        lambda host, port, timeout: transport,
+    )
+    password = "SYNTHETIC_PASSWORD_NOT_FOR_LOGS"
+    client = DesktopSSHPasswordRunner(
+        profile=ClusterProfile("test", "Test", "10.158.132.77", 3088),
+        username="student", password=SecretStr(password), host_key=host_key,
+    )
+    result = client.run(QUERIES["queue"], timeout=10)
+    assert result.stdout == "123\n"
+    assert authentication == [("student", password)]
+    assert password not in commands[0]
+    assert "squeue" in commands[0]

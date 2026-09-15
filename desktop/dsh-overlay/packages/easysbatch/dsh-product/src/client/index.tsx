@@ -28,6 +28,10 @@ interface RuntimeView {
   readonly catalogConfigured: boolean
   readonly profileSource: string | null
   readonly clusterLabel?: string
+  readonly clusterHost?: string
+  readonly clusterPort?: number
+  readonly clusterUsername?: string
+  readonly trustedFingerprint?: string
 }
 
 interface JobView {
@@ -139,6 +143,12 @@ interface ClusterView {
   readonly warnings: readonly string[]
 }
 
+interface SSHHostKeyView {
+  readonly algorithm: string
+  readonly publicKey: string
+  readonly fingerprint: string
+}
+
 function object(value: unknown): JsonObject {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new Error('EasySbatch returned an invalid response')
@@ -161,6 +171,7 @@ function number(value: unknown): number | null {
 function runtimeOf(value: unknown): RuntimeView {
   const row = object(value)
   const cluster = row.cluster === null ? undefined : object(row.cluster)
+  const trusted = row.trusted_host_key === null ? undefined : object(row.trusted_host_key)
   return {
     clusterConfigured: row.cluster_configured === true,
     profilesConfigured: row.profiles_configured === true,
@@ -169,8 +180,23 @@ function runtimeOf(value: unknown): RuntimeView {
     profileSource: optionalString(row.profile_source),
     ...(cluster === undefined ? {} : {
       clusterLabel: `${string(cluster.display_name, '计算集群')} · ${string(cluster.username)}`,
+      clusterHost: string(cluster.host),
+      clusterPort: number(cluster.ssh_port) ?? 22,
+      clusterUsername: string(cluster.username),
     }),
+    ...(trusted === undefined ? {} : { trustedFingerprint: string(trusted.fingerprint) }),
   }
+}
+
+function sshHostKeyOf(value: unknown): SSHHostKeyView {
+  const key = object(object(value).host_key)
+  const algorithm = string(key.algorithm)
+  const publicKey = string(key.public_key)
+  const fingerprint = string(key.fingerprint)
+  if (algorithm === '' || publicKey === '' || !fingerprint.startsWith('SHA256:')) {
+    throw new Error('服务器返回了无效的 SSH 公钥。')
+  }
+  return { algorithm, publicKey, fingerprint }
 }
 
 function profileSourceLabel(value: string | null | undefined): string {
@@ -1191,8 +1217,11 @@ function ClusterPanel({ ctx }: { ctx: ClientContext }) {
   const [saving, setSaving] = useState(false)
   const [displayName, setDisplayName] = useState('学校计算集群')
   const [host, setHost] = useState('')
-  const [port, setPort] = useState('22')
+  const [port, setPort] = useState('3088')
   const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [trustedEndpoint, setTrustedEndpoint] = useState<string | null>(null)
+  const [trustedFingerprint, setTrustedFingerprint] = useState<string | null>(null)
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
@@ -1202,7 +1231,17 @@ function ClusterPanel({ ctx }: { ctx: ClientContext }) {
     ])
     if (result.ok) setSnapshot(clusterOf(result.value))
     else setError(result.error.message)
-    if (runtime.ok) setProfileSource(runtimeOf(runtime.value).profileSource)
+    if (runtime.ok) {
+      const view = runtimeOf(runtime.value)
+      setProfileSource(view.profileSource)
+      if (view.clusterHost !== undefined && view.clusterPort !== undefined) {
+        setHost(current => current === '' ? view.clusterHost! : current)
+        setPort(current => current === '3088' ? String(view.clusterPort) : current)
+        setUsername(current => current === '' ? view.clusterUsername ?? '' : current)
+        setTrustedEndpoint(`${view.clusterHost}:${view.clusterPort}`)
+        setTrustedFingerprint(view.trustedFingerprint ?? null)
+      }
+    }
     setLoading(false)
   }, [ctx])
   useEffect(() => { void load() }, [])
@@ -1211,8 +1250,38 @@ function ClusterPanel({ ctx }: { ctx: ClientContext }) {
     if (!Number.isSafeInteger(sshPort)) { setError('SSH 端口必须是整数。'); return }
     setSaving(true)
     setError(null)
+    const inspected = await ctx.remote.easySbatch.inspectSshHostKey(host.trim(), sshPort)
+    if (!inspected.ok) {
+      setError(inspected.error.message)
+      setSaving(false)
+      return
+    }
+    let hostKey: SSHHostKeyView
+    try {
+      hostKey = sshHostKeyOf(inspected.value)
+    } catch (value) {
+      setError(value instanceof Error ? value.message : '无法检查服务器身份。')
+      setSaving(false)
+      return
+    }
+    const endpoint = `${host.trim()}:${sshPort}`
+    const alreadyTrusted = endpoint === trustedEndpoint && hostKey.fingerprint === trustedFingerprint
+    if (!alreadyTrusted) {
+      const changed = endpoint === trustedEndpoint && trustedFingerprint !== null
+      const accepted = window.confirm(
+        `${changed ? '警告：服务器 SSH 指纹与上次不同。' : '首次连接，请确认服务器 SSH 指纹。'}\n\n`
+        + `${hostKey.algorithm}\n${hostKey.fingerprint}\n\n`
+        + '请与管理员提供的指纹核对；确认后才会发送用户名和密码。',
+      )
+      if (!accepted) { setSaving(false); return }
+    }
     const result = await ctx.remote.easySbatch.configureCluster(
-      'primary', displayName, host.trim(), sshPort, username.trim(),
+      'primary', displayName, host.trim(), sshPort, username.trim(), password,
+      {
+        algorithm: hostKey.algorithm,
+        public_key: hostKey.publicKey,
+        fingerprint: hostKey.fingerprint,
+      },
     )
     if (!result.ok) {
       setError(result.error.message)
@@ -1220,6 +1289,9 @@ function ClusterPanel({ ctx }: { ctx: ClientContext }) {
       return
     }
     setProfileSource(optionalString(object(result.value).profile_source))
+    setTrustedEndpoint(endpoint)
+    setTrustedFingerprint(hostKey.fingerprint)
+    setPassword('')
     setSaving(false)
     await load()
   }
@@ -1239,14 +1311,15 @@ function ClusterPanel({ ctx }: { ctx: ClientContext }) {
         <p>{error}</p>
         <div className={css.connectionForm}>
           <label><span>显示名称</span><input value={displayName} onChange={event => { setDisplayName(event.target.value) }} /></label>
-          <label><span>集群地址</span><input value={host} placeholder="cluster.example.edu" onChange={event => { setHost(event.target.value) }} /></label>
+          <label><span>服务器 IP</span><input value={host} placeholder="10.158.132.77" onChange={event => { setHost(event.target.value) }} /></label>
           <label><span>SSH 端口</span><input value={port} inputMode="numeric" onChange={event => { setPort(event.target.value) }} /></label>
           <label><span>Linux 用户名</span><input value={username} autoComplete="username" onChange={event => { setUsername(event.target.value) }} /></label>
-          <button type="button" className={css.primary} disabled={saving || host.trim() === '' || username.trim() === ''} onClick={() => { void configure() }}>
-            {saving ? '正在自动配置…' : '保存、自动配置并测试'}
+          <label className={css.passwordField}><span>SSH 密码</span><input type="password" value={password} autoComplete="current-password" onChange={event => { setPassword(event.target.value) }} /></label>
+          <button type="button" className={css.primary} disabled={saving || host.trim() === '' || username.trim() === '' || password === ''} onClick={() => { void configure() }}>
+            {saving ? '正在安全连接…' : '登录并连接'}
           </button>
         </div>
-        <small>连接 10.158.132.77 时会套用已审核的共享环境；其他服务器使用安全默认环境，并从 Slurm 实时读取计算资源。Beta 不保存集群密码或私钥。</small>
+        <small>服务器 IP 为 10.158.132.77 且 SSH 端口为 3088 时，会套用已审核的共享环境；其他服务器使用安全默认环境，并从 Slurm 实时读取计算资源。密码仅保留在本次软件会话中，退出后清除。</small>
       </div>}
       {snapshot !== null && (
         <>

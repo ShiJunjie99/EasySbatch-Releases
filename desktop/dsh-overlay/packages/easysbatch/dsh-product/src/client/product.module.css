@@ -313,6 +313,7 @@
 }
 
 .connectionForm label { display: flex; flex-direction: column; gap: 6px; }
+.connectionForm .passwordField { grid-column: 1 / -1; }
 .connectionForm label span { color: var(--dsw-alias-label-secondary); font-size: 12px; font-weight: 650; }
 .connectionForm input {
   box-sizing: border-box;
