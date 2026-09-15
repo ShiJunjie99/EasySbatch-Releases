@@ -1,0 +1,7 @@
+{% macro badge(value, source=false) -%}
+{% set b = field_source_badge(value) if source else status_badge(value) %}
+<span class="badge bg-{{ b.tone }}-lt" title="{{ value }} · {{ b.description }}"{% if source %} data-source="{{ value }}"{% endif %}><span class="status-symbol" aria-hidden="true">{{ b.symbol }}</span> {{ b.short_label if source else b.label }}</span>
+{%- endmacro %}
+{% macro loading(id, text='正在准备任务…') -%}
+<span id="{{ id }}" class="htmx-indicator loading-state" role="status"><span aria-hidden="true">…</span> {{ text }}</span>
+{%- endmacro %}

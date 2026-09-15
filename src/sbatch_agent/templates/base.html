@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="htmx-config" content='{"allowEval":false,"allowScriptTags":false,"includeIndicatorStyles":false,"selfRequestsOnly":true,"historyEnabled":false,"historyRestoreAsHxRequest":false,"reportValidityOfForms":true}'>
+  <title>{% block title %}EasySbatch{% endblock %}</title>
+  <link rel="stylesheet" href="/static/vendor/tabler-1.5.0/tabler.min.css">
+  <link rel="stylesheet" href="/static/web.css">
+  <script src="/static/vendor/htmx-2.0.10/htmx.min.js" defer></script>
+  <script src="/static/web.js" defer></script>
+</head>
+<body hx-history="false">
+<a class="skip-link" href="#main-content">跳转到正文</a>
+{% if authentication_enabled and not authenticated %}
+<div class="auth-shell">
+  <main id="main-content" class="auth-main" tabindex="-1">{% block auth_content %}{% endblock %}</main>
+</div>
+{% else %}
+<div class="page">
+  <aside class="navbar navbar-vertical navbar-expand-lg app-sidebar" aria-label="应用导航">
+    <a class="navbar-brand brand" href="/">Easy<span>Sbatch</span></a>
+    <div class="app-caption">科研任务投递</div>
+    {% if legacy_allowed %}<nav aria-label="主导航" class="navbar-nav">
+    {% for url, label, symbol in [('/new','新建任务','＋'),('/jobs','任务记录','≡'),('/cluster','集群资源','▦')] %}
+      {% set active = request.url.path.startswith(url) %}
+      <a href="{{ url }}" class="nav-link{% if active %} active{% endif %}"{% if active %} aria-current="page"{% endif %}><span class="nav-symbol" aria-hidden="true">{{ symbol }}</span>{{ label }}</a>
+    {% endfor %}
+    </nav>{% endif %}
+    <div class="sidebar-meta">
+      <div class="text-secondary">{{ '当前用户' if authenticated else '执行账户' }}</div>
+      <strong>{{ identity }}</strong>
+      {% if authenticated %}
+      <a href="/session" class="account-link">集群身份</a>
+      <form method="post" action="/logout" class="logout-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn btn-sm btn-outline-secondary">退出登录</button>
+      </form>
+      {% endif %}
+      {% if legacy_allowed %}
+      <div class="ai-indicator" title="{{ 'AI 请求由当前用户电脑发起。' if ai_transport_mode == 'local_user_provider' else 'AI 服务状态。' }}">
+        <span class="status-dot {{ 'bg-success' if ai_status.state == 'available' else 'bg-secondary' }}" aria-hidden="true"></span>
+        {% if ai_transport_mode == 'local_user_provider' %}
+        AI {{ 'DeepSeek 已配置（可用）' if ai_status.state == 'available' else '尚未配置' if ai_status.state == 'not_configured' else '当前不可用' }}
+        {% else %}
+        AI {{ '可用' if ai_status.state == 'available' else '当前不可用' }}
+        {% endif %}
+      </div>
+      {% endif %}
+      <small>{{ 'SSH 身份已绑定' if authenticated else '单用户工作区' }}</small>
+    </div>
+  </aside>
+  <div class="page-wrapper">
+    <header class="workspace-bar"><span>科研工作区</span><span class="badge bg-secondary-lt">Slurm · 手动刷新</span></header>
+    <main id="main-content" class="page-body container-xl" tabindex="-1">{% block content %}{% endblock %}</main>
+    <footer>{{ 'SSH 身份会话 · 状态手动刷新' if authenticated else '单用户模式 · 以服务进程账户执行 · 状态手动刷新' }}</footer>
+  </div>
+</div>
+{% endif %}
+</body>
+</html>

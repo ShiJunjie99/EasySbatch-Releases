@@ -1,0 +1,2 @@
+{% if errors %}<div class="alert alert-danger" role="alert" tabindex="-1"><div><strong>⚠ 请检查当前输入或操作</strong><ul>{% for error in errors %}{% set copy = error_display(error) %}<li>{% if copy[1] %}<details><summary>{{ copy[0] }}</summary><code>{{ copy[1] }}</code></details>{% else %}{{ copy[0] }}{% endif %}</li>{% endfor %}</ul><a href="/new?mode=manual">继续手动配置</a></div></div>{% endif %}
+{% if notice %}<div class="alert alert-info" role="status">{{ notice }}</div>{% endif %}

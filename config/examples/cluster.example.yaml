@@ -1,0 +1,7 @@
+# Public example only.  Put a real profile in a user-local or private
+# deployment directory; never add passwords, private keys or API keys here.
+clusters:
+  - id: my-cluster
+    display_name: My HPC Cluster
+    host: cluster.example.edu
+    ssh_port: 22

@@ -1,0 +1,25 @@
+{% macro resource_control(key, prefix, values, recommendations, pending_analysis=false) %}
+{% set memory = key == 'memory_mib' %}
+{% set mode_key = 'memory_mode' if memory else 'walltime_mode' %}
+{% set mode = values.get(mode_key) or 'explicit' %}
+{% set candidate = recommendations.get(key) %}
+<div class="resource-policy" data-resource-policy>
+  <label for="{{ prefix }}{{ mode_key }}">{{ '内存' if memory else '运行时限' }}</label>
+  <select id="{{ prefix }}{{ mode_key }}" name="{{ mode_key }}" data-policy-mode aria-controls="{{ prefix }}{{ key }}-panels">
+    {% for value, label in [('cluster_default', '使用集群默认'), ('recommended', '智能推荐'), ('explicit', '手动指定')] %}<option value="{{ value }}"{% if mode == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
+  </select>
+  <div id="{{ prefix }}{{ key }}-panels" aria-live="polite">
+    <div data-policy-panel="cluster_default"{% if mode != 'cluster_default' %} hidden{% endif %}><small>{{ '由当前 Partition / QOS 决定' if memory else '最终限制由 Slurm / QOS / 账户策略决定' }}</small></div>
+    <div data-policy-panel="recommended"{% if mode != 'recommended' %} hidden{% endif %}>
+      {% if candidate %}<p class="policy-value">{{ candidate.value ~ ' MiB' if memory else format_duration(candidate.value) }} <span class="badge bg-primary-lt">智能推荐</span></p>
+      <details class="field-evidence"><summary>查看依据</summary><small>{{ candidate.evidence.source }}</small><p>{{ candidate.evidence.reason }}</p><small>有明确依据</small></details>
+      {% elif pending_analysis %}<small>分析后检查可靠依据；无依据时需要重新选择。</small>
+      {% else %}<p class="policy-unavailable">{{ '智能推荐暂不可用' if memory else '暂时没有足够依据推荐运行时限' }}</p><small>请选择使用集群默认或手动指定。</small>{% endif %}
+    </div>
+    <div data-policy-panel="explicit"{% if mode != 'explicit' %} hidden{% endif %}>
+      <label class="visually-hidden" for="{{ prefix }}{{ key }}">{{ '每节点内存 · MiB' if memory else '运行时限 · HH:MM:SS' }}</label>
+      <input id="{{ prefix }}{{ key }}" name="{{ key }}" type="text" value="{{ values.get(key, '') }}" placeholder="{{ '例如：4096 MiB' if memory else '例如：02:00:00' }}"{% if mode != 'explicit' %} disabled{% endif %} data-policy-input>
+    </div>
+  </div>
+</div>
+{% endmacro %}

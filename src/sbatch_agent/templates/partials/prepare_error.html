@@ -1,0 +1,15 @@
+{% if prepare_failure %}
+<div class="alert alert-danger" role="alert" tabindex="-1" data-error-code="{{ prepare_failure.code }}" data-prepare-request-id="{{ prepare_trace.request_id }}">
+  {% set copy = prepare_failure_copy(prepare_failure.code) %}
+  <div><h2>{{ copy[0] }}</h2><p>{{ copy[1] }}</p>
+    {% if prepare_trace.scan_completed %}<p>项目扫描已完成。</p>{% endif %}
+    <p>未创建或提交任何作业。</p>
+    <details class="error-diagnostics"><summary>排障信息</summary><small>错误标识：<code>{{ prepare_failure.code }}</code><br>请求编号：<code>{{ prepare_trace.request_id }}</code></small></details>
+    <div class="action-row">
+      {% if prepare_failure.retry_analysis %}<button type="submit" form="smart-prepare-form" class="btn" data-analysis-retry>重新分析</button>{% endif %}
+      <a href="/new?mode=manual">继续手动配置</a>
+    </div>
+    {% if prepare_failure.retry_analysis %}<small>仅重新分析，不会重新提交作业。</small>{% endif %}
+  </div>
+</div>
+{% endif %}

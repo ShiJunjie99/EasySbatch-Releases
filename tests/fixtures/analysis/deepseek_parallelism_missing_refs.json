@@ -1,0 +1,30 @@
+{
+  "draft": {
+    "parallelism": {
+      "serial": {
+        "value": true,
+        "status": "INFERRED",
+        "evidence_refs": ["e00002"],
+        "reason": "Simple script, no parallel hints."
+      },
+      "threads": {
+        "value": false,
+        "status": "INFERRED",
+        "evidence_refs": [],
+        "reason": "No threading evidence."
+      },
+      "mpi": {
+        "value": false,
+        "status": "INFERRED",
+        "evidence_refs": [],
+        "reason": "No MPI evidence."
+      },
+      "gpu": {
+        "value": false,
+        "status": "INFERRED",
+        "evidence_refs": [],
+        "reason": "No GPU evidence."
+      }
+    }
+  }
+}

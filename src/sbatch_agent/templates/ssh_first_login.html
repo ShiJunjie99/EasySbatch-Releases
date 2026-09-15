@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}连接集群 · EasySbatch{% endblock %}
+{% block auth_content %}
+<section class="card auth-card" aria-labelledby="login-title">
+  <div class="card-body">
+    <div class="auth-brand">Easy<span>Sbatch</span></div>
+    <h1 id="login-title">连接集群</h1>
+    {% if notice %}<div class="alert alert-warning" role="status">{{ notice }}</div>{% endif %}
+    {% if error %}<div class="alert alert-danger" role="alert">{{ error }}</div>{% endif %}
+    <p class="mb-3">请在电脑上运行 EasySbatch Launcher。</p>
+    <div class="auth-launcher-command font-monospace">easysbatch-launcher</div>
+    <p class="auth-note">Launcher 将使用系统 SSH 连接集群，并自动打开此页面。</p>
+    <details class="auth-details">
+      <summary>连接方式</summary>
+      <p>SSH 密码或密钥只由电脑上的系统 SSH 客户端处理，不会发送给网页。</p>
+    </details>
+  </div>
+</section>
+{% endblock %}

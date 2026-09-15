@@ -1,0 +1,224 @@
+name: build-launcher
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "launcher-build/**"
+    tags:
+      - "v*-alpha.*"
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+  PYINSTALLER_VERSION: "6.16.0"
+
+jobs:
+  tests:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install test dependencies
+        run: python -m pip install ".[test,web]"
+      - name: Run full test suite
+        run: python -m pytest -q
+
+  linux-x86_64:
+    needs: tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install build dependencies
+        run: python -m pip install ".[test]" "pyinstaller==${PYINSTALLER_VERSION}"
+      - name: Stamp and build
+        shell: bash
+        run: |
+          python scripts/stamp_launcher_build.py "$GITHUB_SHA"
+          EASYSBATCH_BINARY_NAME=EasySbatch-Linux-x86_64 python -m PyInstaller --noconfirm --clean packaging/easysbatch_launcher.spec
+          mkdir -p release
+          cp dist/EasySbatch-Linux-x86_64 release/EasySbatch-Linux-x86_64
+          chmod 0755 release/EasySbatch-Linux-x86_64
+      - name: Smoke final artifact outside checkout
+        shell: bash
+        run: |
+          smoke="$RUNNER_TEMP/easysbatch-clean"
+          mkdir -p "$smoke/home"
+          cp release/EasySbatch-Linux-x86_64 "$smoke/"
+          cd "$smoke"
+          env -i PATH="$PATH" HOME="$smoke/home" LC_ALL=C ./EasySbatch-Linux-x86_64 --version
+          env -i PATH="$PATH" HOME="$smoke/home" LC_ALL=C ./EasySbatch-Linux-x86_64 --self-test
+          set +e
+          env -i PATH="$PATH" HOME="$smoke/home" LC_ALL=C ./EasySbatch-Linux-x86_64 status
+          status_code=$?
+          set -e
+          test "$status_code" -eq 1
+          file EasySbatch-Linux-x86_64 | grep -q "x86-64"
+      - name: Scan artifact
+        run: python scripts/scan_launcher_artifact.py release/EasySbatch-Linux-x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EasySbatch-Linux-x86_64
+          path: release/EasySbatch-Linux-x86_64
+          if-no-files-found: error
+
+  windows-x86_64:
+    needs: tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install build dependencies
+        run: python -m pip install ".[test]" "pyinstaller==${{ env.PYINSTALLER_VERSION }}"
+      - name: Stamp and build
+        shell: pwsh
+        run: |
+          python scripts/stamp_launcher_build.py "$env:GITHUB_SHA"
+          $env:EASYSBATCH_BINARY_NAME = "EasySbatch-Windows-x86_64"
+          python -m PyInstaller --noconfirm --clean packaging/easysbatch_launcher.spec
+          New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item dist/EasySbatch-Windows-x86_64.exe release/EasySbatch-Windows-x86_64.exe
+      - name: Smoke final artifact outside checkout
+        shell: pwsh
+        run: |
+          $smoke = Join-Path $env:RUNNER_TEMP "easysbatch-clean"
+          New-Item -ItemType Directory -Force $smoke | Out-Null
+          Copy-Item release/EasySbatch-Windows-x86_64.exe $smoke/
+          Push-Location $smoke
+          Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+          ./EasySbatch-Windows-x86_64.exe --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./EasySbatch-Windows-x86_64.exe --self-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./EasySbatch-Windows-x86_64.exe status
+          if ($LASTEXITCODE -ne 1) { throw "unexpected Agent status smoke result" }
+          $global:LASTEXITCODE = 0
+          if (-not (Get-Command ssh.exe -ErrorAction SilentlyContinue)) { throw "system OpenSSH missing" }
+          Pop-Location
+      - name: Scan artifact
+        run: python scripts/scan_launcher_artifact.py release/EasySbatch-Windows-x86_64.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EasySbatch-Windows-x86_64
+          path: release/EasySbatch-Windows-x86_64.exe
+          if-no-files-found: error
+
+  macos:
+    needs: tests
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            architecture: arm64
+          - runner: macos-15-intel
+            architecture: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Verify native architecture
+        shell: bash
+        run: test "$(uname -m)" = "${{ matrix.architecture }}"
+      - name: Install build dependencies
+        run: python -m pip install ".[test]" "pyinstaller==${PYINSTALLER_VERSION}"
+      - name: Stamp, build and assemble app
+        shell: bash
+        run: |
+          python scripts/stamp_launcher_build.py "$GITHUB_SHA"
+          EASYSBATCH_BINARY_NAME=easysbatch-launcher python -m PyInstaller --noconfirm --clean packaging/easysbatch_launcher.spec
+          mkdir -p release
+          python scripts/build_macos_launcher.py \
+            --binary dist/easysbatch-launcher \
+            --output release \
+            --architecture "${{ matrix.architecture }}"
+      - name: Smoke final app bundle outside checkout
+        shell: bash
+        run: |
+          app="release/EasySbatch-macOS-${{ matrix.architecture }}.app"
+          test -d "$app/Contents/MacOS"
+          test -d "$app/Contents/Resources"
+          plutil -lint "$app/Contents/Info.plist"
+          sh -n "$app/Contents/MacOS/EasySbatch"
+          file "$app/Contents/Resources/easysbatch-launcher" | grep -q "${{ matrix.architecture }}"
+          smoke="$RUNNER_TEMP/easysbatch-clean"
+          mkdir -p "$smoke/home"
+          cp "$app/Contents/Resources/easysbatch-launcher" "$smoke/"
+          cd "$smoke"
+          env -i PATH="$PATH" HOME="$smoke/home" LC_ALL=C ./easysbatch-launcher --version
+          env -i PATH="$PATH" HOME="$smoke/home" LC_ALL=C ./easysbatch-launcher --self-test
+          set +e
+          env -i PATH="$PATH" HOME="$smoke/home" LC_ALL=C ./easysbatch-launcher status
+          status_code=$?
+          set -e
+          test "$status_code" -eq 1
+          test -x /usr/bin/ssh
+      - name: Scan app and release assets
+        run: >-
+          python scripts/scan_launcher_artifact.py
+          release/EasySbatch-macOS-${{ matrix.architecture }}.app
+          release/EasySbatch-macOS-${{ matrix.architecture }}.zip
+          release/EasySbatch-macOS-${{ matrix.architecture }}.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EasySbatch-macOS-${{ matrix.architecture }}
+          path: |
+            release/EasySbatch-macOS-${{ matrix.architecture }}.zip
+            release/EasySbatch-macOS-${{ matrix.architecture }}.dmg
+          if-no-files-found: error
+
+  checksums:
+    needs: [tests, linux-x86_64, windows-x86_64, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - name: Create and verify SHA256SUMS
+        run: |
+          python scripts/write_launcher_checksums.py release
+          cd release
+          sha256sum --check SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EasySbatch-Launcher-release-assets
+          path: release/*
+          if-no-files-found: error
+
+  github-release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: checksums
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: EasySbatch-Launcher-release-assets
+          path: release
+      - name: Publish prerelease without stable/latest promotion
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME" release/*
+          --prerelease
+          --title "EasySbatch Launcher $GITHUB_REF_NAME"
+          --notes-file packaging/release_notes.md

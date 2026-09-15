@@ -1,0 +1,17 @@
+{% from 'partials/macros.html' import loading %}
+{% include 'partials/alerts.html' %}
+{% if project_evidence %}
+{% include 'project_evidence.html' %}
+<details class="mt-3"><summary>AI 分析 · 独立草稿</summary>
+<p>仅发送所选扫描证据和任务描述；不自动修改手工表单、不创建任务。结果由服务端校验。</p>
+{% if scan_token %}
+<form method="post" action="/new/analyze" hx-post="/new/analyze" hx-target="#ai-analysis-result" hx-indicator="#analyze-loading" hx-disabled-elt="find button" hx-sync="this:drop" data-partial-form>
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="scan_token" value="{{ scan_token }}">
+  <label for="task_intent">任务描述<textarea name="task_intent" id="task_intent" rows="3" maxlength="2000" required placeholder="例如：运行 case01，不执行后处理">{{ task_intent }}</textarea></label>
+  <button type="submit" class="btn btn-outline-primary">分析项目</button> {{ loading('analyze-loading', '正在分析项目…') }}
+</form>
+{% else %}<p class="warning">扫描结果过大，未创建分析入口；可缩小扫描范围或继续手工填写。</p>{% endif %}
+</details>
+<div id="ai-analysis-result" aria-live="polite">{% if analysis %}{% include 'analysis_result.html' %}{% endif %}</div>
+{% endif %}

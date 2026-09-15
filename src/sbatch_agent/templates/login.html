@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}登录 · EasySbatch{% endblock %}
+{% block auth_content %}
+<section class="card auth-card" aria-labelledby="login-title">
+  <div class="card-body">
+    <div class="auth-brand">Easy<span>Sbatch</span></div>
+    <h1 id="login-title">登录集群账户</h1>
+    {% if notice %}<div class="alert alert-warning" role="status">{{ notice }}</div>{% endif %}
+    {% if error %}<div class="alert alert-danger" role="alert">{{ error }}</div>{% endif %}
+    <form method="post" action="/login" data-auth-login>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="mb-3">
+        <label class="form-label" for="login-username">用户名</label>
+        <input class="form-control" id="login-username" name="username" value="{{ username_value }}"
+               autocomplete="username" autocapitalize="none" spellcheck="false" required maxlength="32">
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="login-password">SSH 密码</label>
+        <input class="form-control" id="login-password" name="password" type="password"
+               autocomplete="current-password" required maxlength="1024">
+      </div>
+      <button class="btn btn-primary w-100" type="submit" data-loading-label="正在验证集群身份…"><span class="spinner-border spinner-border-sm me-2" data-loading-spinner hidden aria-hidden="true"></span><span data-loading-text>登录</span></button>
+    </form>
+    <p class="auth-note">密码仅用于本次 SSH 认证，不会保存。</p>
+    <details class="auth-details">
+      <summary>了解认证方式</summary>
+      <p>登录成功后，系统会通过 SSH 核对远端 Linux 身份。连接断开后需要重新登录。</p>
+    </details>
+  </div>
+</section>
+{% endblock %}

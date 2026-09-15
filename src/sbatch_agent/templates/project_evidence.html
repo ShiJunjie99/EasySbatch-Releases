@@ -1,0 +1,44 @@
+<section aria-label="项目扫描结果">
+  {% set evidence_prefix = evidence_prefix|default('scan-') %}
+  <h2>项目扫描结果</h2>
+  <p>扫描时间： {{ project_evidence.scanned_at.isoformat() }} · 已考察 {{ project_evidence.files_considered }} 个文件项，
+     跳过内容 {{ project_evidence.files_skipped }} 项，读取 {{ project_evidence.bytes_read }} 字节。</p>
+  <p class="hint">扫描只收集依据，不代表已确认运行方式。</p>
+  {% include 'partials/project_tree.html' %}
+  {% if project_evidence.warnings %}<details class="warning"><summary>⚠ 注意事项 · {{ project_evidence.warnings|length }} 项</summary><ul>{% for warning in project_evidence.warnings %}<li>{{ warning }}</li>{% endfor %}</ul></details>{% endif %}
+  {% if project_evidence.limits_reached %}<details><summary>⚠ 已达到部分扫描上限</summary><p>{{ project_evidence.limits_reached|join(', ') }}</p></details>{% endif %}
+  {% if project_evidence.ambiguities %}<p>待确认：</p><ul>{% for item in project_evidence.ambiguities %}<li>{{ item }}</li>{% endfor %}</ul>{% endif %}
+  <details><summary>候选配置详情</summary>
+  {% for key, title in [
+    ('project_type_candidates', '项目类型'), ('entrypoint_candidates', '候选入口'),
+    ('existing_run_commands', '运行命令依据'), ('build_candidates', '构建方式'),
+    ('executable_candidates', '候选程序'), ('environment_hints', '环境线索'),
+    ('cli_hints', '参数线索'), ('input_candidates', '候选输入'),
+    ('parallelism_hints', '并行线索'), ('installed_software_hints', '已安装软件线索'),
+    ('existing_shell_scripts', '已有脚本'), ('existing_sbatch_scripts', '已有提交脚本')
+  ] %}
+    <h3>{{ title }}</h3>
+    {% if project_evidence[key] %}
+      <ul>{% for candidate in project_evidence[key][:20] %}
+        <li><code>{{ candidate.value }}</code> <span class="badge">{{ candidate.level.value }}</span>
+          <small>{{ candidate.kind }} · 依据 {% for eid in candidate.evidence_ids[:8] %}<span>{{ eid }}</span> {% endfor %}</small>
+        </li>
+      {% endfor %}</ul>
+    {% else %}<p class="hint">未发现直接支持的候选；不代表项目没有此需求。</p>{% endif %}
+  {% endfor %}
+  <small>每类最多展示 20 个候选；展示上限不改变 Scanner / Analyzer 的数据。</small></details>
+  <details><summary>依据原文与行号（{{ project_evidence.evidence_items|length }}）</summary>
+    {% for item in project_evidence.evidence_items[:60] %}
+      <article id="{{ evidence_prefix }}{{ item.id }}">
+        <p><strong>{{ item.id }} · {{ item.source_path }}{% if item.line_start %}:{{ item.line_start }}{% if item.line_end != item.line_start %}–{{ item.line_end }}{% endif %}{% else %} · 文件信息{% endif %}</strong>
+           <span class="badge">{{ item.level.value }}</span></p>
+        <p>{{ item.description }}</p>
+        {% if item.snippet %}<pre>{{ item.snippet[:1200] }}{% if item.snippet|length > 1200 %}… [展示已截断]{% endif %}</pre>{% endif %}
+      </article>
+    {% endfor %}
+    <small>最多展示 60 条原文，每条最多 1200 字符。</small></details>
+  <details><summary>文件指纹 · SHA-256</summary>
+    <ul>{% for item in project_evidence.source_fingerprints[:60] %}<li><code>{{ item.path }}: {{ item.sha256 }}</code></li>{% endfor %}</ul><small>最多展示 60 项。</small>
+  </details>
+  {% if project_evidence.skipped_directories %}<details><summary>已跳过目录</summary><ul>{% for path in project_evidence.skipped_directories[:60] %}<li>{{ path }}</li>{% endfor %}</ul><small>最多展示 60 项；未扫描其内容。</small></details>{% endif %}
+</section>

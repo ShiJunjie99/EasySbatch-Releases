@@ -1,0 +1,27 @@
+{% from 'partials/macros.html' import loading %}
+<section class="card folder-browser" aria-label="选择工作目录" tabindex="-1">
+<div class="card-body">
+<div class="heading"><h2>选择工作目录</h2><button type="button" class="secondary" data-folder-cancel>取消</button></div>
+{% if folder_error %}<p class="alert alert-warning" role="alert" tabindex="-1">{{ folder_error }}</p><a href="/ui/folders" hx-get="/ui/folders" hx-target="#folder-picker">返回工作区</a>{% endif %}
+{% if folder_listing %}
+<nav class="folder-breadcrumb" aria-label="目录导航">{% for name, path in folder_listing.breadcrumbs %}{% if not loop.first %}<span aria-hidden="true"> / </span>{% endif %}<a href="/ui/folders?path={{ path|urlencode }}" hx-get="/ui/folders?path={{ path|urlencode }}" hx-target="#folder-picker" hx-sync="#folder-picker:queue last"{% if loop.last %} aria-current="location"{% endif %}>{{ name }}</a>{% endfor %}</nav>
+{% if folder_listing.parent is not none %}<a class="folder-back" href="/ui/folders?path={{ folder_listing.parent|urlencode }}" hx-get="/ui/folders?path={{ folder_listing.parent|urlencode }}" hx-target="#folder-picker" hx-sync="#folder-picker:queue last">← 上一级</a>{% endif %}
+<form method="post" action="/ui/folders/select" hx-post="/ui/folders/select" hx-target="#working-folder" hx-swap="outerHTML" hx-indicator="#folder-loading" hx-disabled-elt="find button" hx-sync="#folder-picker:queue last">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<label class="folder-entry current-folder" for="folder-current"><input id="folder-current" type="radio" name="path" value="{{ folder_listing.current.relative_path }}" checked>📁 {{ folder_listing.current.display_path }} <small>当前目录</small></label>
+<div class="folder-entries">
+{% for entry in folder_listing.entries %}
+<div class="folder-entry">
+{% if entry.is_accessible %}<input type="radio" id="folder-entry-{{ loop.index }}" name="path" value="{{ entry.relative_path }}" aria-label="选择 {{ entry.name }}"><span aria-hidden="true">📁</span><a href="/ui/folders?path={{ entry.relative_path|urlencode }}" hx-get="/ui/folders?path={{ entry.relative_path|urlencode }}" hx-target="#folder-picker" hx-include="unset" hx-params="none" hx-sync="#folder-picker:queue last" aria-label="打开 {{ entry.name }}">{{ entry.name }}</a>
+{% else %}<span class="folder-icon" aria-hidden="true">{{ '🔗' if entry.is_symlink else '📁' if entry.is_dir else '📄' }}</span><span>{{ entry.name }}</span>{% if entry.is_symlink %}<small>链接不可访问</small>{% elif entry.is_dir %}<small>无访问权限</small>{% endif %}{% endif %}
+</div>
+{% endfor %}
+</div>
+{% if folder_listing.enumeration_limited %}<p class="hint">目录条目过多，请在高级设置中指定子目录路径。</p>
+{% elif folder_listing.truncated %}<p class="hint">仅显示前 {{ folder_listing.limit }} 项，可进入子目录继续浏览。</p>
+{% elif not folder_listing.entries %}<p class="hint">此文件夹为空或没有可见条目。</p>{% endif %}
+<div class="action-row"><button type="submit" class="btn btn-primary">使用此文件夹</button>{{ loading('folder-loading', '正在选择…') }}<small>点击名称进入，勾选后确认。</small></div>
+</form>
+{% endif %}
+<noscript><a href="/new">取消并返回新建任务</a></noscript>
+</div></section>

@@ -1,0 +1,31 @@
+{% from 'partials/macros.html' import loading %}
+<section aria-label="资源推荐">
+  <h3>资源推荐</h3>
+  <p class="snapshot-label">{{ snapshot_label(prepared.snapshot if smart_recommendations|default(false) else none, report) }}</p>
+  <p class="hint">容量兼容候选，最终调度由 Slurm 决定；不预测等待时间。偏好：{{ preference_label(report.preference.value) }}</p>
+  {% if report.warnings %}<details class="alert alert-warning"><summary>⚠ 推荐注意事项 · {{ report.warnings|length }} 项</summary><ul>{% for warning in report.warnings %}<li>{{ warning }}</li>{% endfor %}</ul></details>{% endif %}
+  <div class="recommendation-grid">
+  {% for item in report.recommendations[:3] %}
+  <article class="card recommendation"><div class="card-body">
+    <div class="page-pretitle">{{ '推荐方案' if item.rank == 1 else '备选方案 ' ~ (item.rank - 1) }}{% if smart_recommendations|default(false) and prepared.selected_recommendation and item.id == prepared.selected_recommendation.id %} · 当前采用{% endif %}</div>
+    <h3>{{ item.partition }}</h3>
+    <p>{{ item.proposed_resources.nodes }} 节点 · {{ item.proposed_resources.ntasks }} 进程 · {{ item.proposed_resources.cpus_per_task }} CPU/进程<br>{{ '内存：集群默认' if item.proposed_resources.memory_policy.mode == 'cluster_default' else item.proposed_resources.memory_mib ~ ' MiB/节点' }} · {% if item.proposed_resources.gpus %}{{ item.proposed_resources.gpus.count }} GPU/节点 {{ item.proposed_resources.gpus.gpu_type or '' }}{% else %}不申请 GPU{% endif %} · <span class="duration">{{ '时限：集群默认' if item.proposed_resources.walltime_policy.mode == 'cluster_default' else format_duration(item.proposed_resources.time_limit_seconds) }}</span></p>
+    <p class="hint">结合资源需求与当前集群快照排序。</p>
+    <details><summary>推荐依据与限制{% if item.warnings %} · ⚠ {{ item.warnings|length }} 项待核对{% endif %}</summary>
+      <ul>{% for reason in item.reasons %}<li>{{ reason }}</li>{% endfor %}</ul>
+      <ul>{% for warning in item.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
+      <p class="hint">{{ item.eligibility.value }} · 内部排序分数：{{ '%.1f'|format(item.score) }} / 100，仅用于内部排序，不是概率。</p>
+      <dl>{% for fact in item.evidence %}<dt>{{ fact.source }} · {{ fact.field }}</dt><dd>{{ fact.value if fact.value is not none else '未知' }}</dd>{% endfor %}</dl>
+    </details>
+    {% if smart_recommendations|default(false) %}
+      {% if not attempted %}<form method="post" action="/new/prepared/{{ prepared.id }}/continue" hx-post="/new/prepared/{{ prepared.id }}/continue" hx-target="#smart-prepare-result" hx-indicator="#recommend-loading-{{ item.rank }}" hx-disabled-elt="find button" hx-sync="#smart-prepare-result:drop" data-partial-form>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ prepared.revision }}"><input type="hidden" name="recommendation_id" value="{{ item.id }}"><button type="submit" class="btn btn-sm">使用此方案 · {{ item.partition }}</button>{{ loading('recommend-loading-' ~ item.rank, '正在更新…') }}</form>{% endif %}
+    {% else %}
+      <form method="post" action="/new/apply"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="choice" value="{{ apply_tokens[item.id] }}"><button type="submit" class="btn">使用此方案</button></form>
+    {% endif %}
+  </div></article>
+  {% else %}<p class="warning">未找到兼容的资源配置。</p>{% endfor %}
+  </div>
+  {% if report.rejections %}<details><summary>未入选方案及原因</summary>{% for rejection in report.rejections %}<p><strong>{{ rejection.partition }}</strong></p><ul>{% for reason in rejection.reasons %}<li>{{ reason }}</li>{% endfor %}</ul>{% endfor %}</details>{% endif %}
+  {% if not smart_recommendations|default(false) %}<p class="hint">仅填入推荐配置，不创建或提交作业。修改需求后请重新推荐。</p>{% endif %}
+</section>

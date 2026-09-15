@@ -1,0 +1,6 @@
+#!/bin/sh
+
+# Finder applications have no interactive terminal. Open the bundled CLI in
+# Apple's Terminal so the system OpenSSH client owns authentication prompts.
+RESOURCE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../Resources" && pwd -P) || exit 1
+exec /usr/bin/osascript "$RESOURCE_DIR/launch.applescript" "$RESOURCE_DIR/easysbatch-launcher"

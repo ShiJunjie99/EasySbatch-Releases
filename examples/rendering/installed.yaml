@@ -1,0 +1,35 @@
+# Complete illustrative proposal for OFFLINE rendering, not a verified cluster job.
+project_dir: /shared/gromacs-demo
+work_dir: /shared/gromacs-demo
+run_type: installed
+entrypoint: gmx_mpi
+environment_profile: {id: example-gromacs, version: "1"}
+prepare_steps:
+  - kind: command
+    executable: gmx_mpi
+    args:
+      - grompp
+      - -f
+      - mdp/em.mdp
+      - -c
+      - polymer/resin_bcb_melt.gro
+      - -p
+      - topol.top
+      - -o
+      - em.tpr
+run_step:
+  executable: gmx_mpi
+  args: [mdrun, -deffnm, em, -ntomp, "1"]
+resources:
+  partition: example_cpu
+  memory_mib: 4096
+  time_limit_seconds: 1800
+job_name: installed-demo
+required_inputs:
+  - mdp/em.mdp
+  - polymer/resin_bcb_melt.gro
+  - topol.top
+  - forcefield/martini_v3_subset.itp
+  - topology/resin_bcb.itp
+unresolved: []
+spec_version: 1

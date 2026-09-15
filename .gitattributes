@@ -1,0 +1,5 @@
+deployment-private/** export-ignore
+*.sqlite export-ignore
+*.sqlite3 export-ignore
+logs/** export-ignore
+runs/** export-ignore

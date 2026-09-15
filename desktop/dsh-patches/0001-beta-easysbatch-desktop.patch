@@ -1,0 +1,340 @@
+diff --git a/apps/desktop-host/package.json b/apps/desktop-host/package.json
+index 83b1ed2..d091d0b 100644
+--- a/apps/desktop-host/package.json
++++ b/apps/desktop-host/package.json
+@@ -11,6 +11,7 @@
+     "config/desktop.cordis.patch.yml"
+   ],
+   "dependencies": {
++    "@beta-easysbatch/dsh-bundle": "workspace:^",
+     "@deepseek-ai/cordis": "workspace:^",
+     "@deepseek-ai/cordis-plugin-include": "workspace:^",
+     "@deepseek-ai/dsh": "workspace:^",
+diff --git a/apps/desktop/electron-builder.config.mjs b/apps/desktop/electron-builder.config.mjs
+index c47bd6d..a448392 100644
+--- a/apps/desktop/electron-builder.config.mjs
++++ b/apps/desktop/electron-builder.config.mjs
+@@ -25,14 +25,15 @@ export function createElectronBuilderConfig(
+   hostArch = process.arch,
+ ) {
+   const appId = resolveDesktopAppId(env)
++  const unsigned = env.BETA_EASYSBATCH_UNSIGNED === '1'
+   const targetPlatform = env.DSH_DESKTOP_TARGET_PLATFORM
+   const resolvedPlatform = targetPlatform ?? hostPlatform
+   const resolvedArch = env.DSH_DESKTOP_TARGET_ARCH ?? hostArch
+   const packagesMacOS = targetPlatform === 'darwin' || (targetPlatform === undefined && hostPlatform === 'darwin')
+   const packagesWindows = targetPlatform === 'win32'
+-  const macOSSigning = packagesMacOS ? resolveMacOSSigningEnvironment(env) : undefined
+-  if (packagesMacOS) resolveMacOSNotarizationEnvironment(env)
+-  const windowsSigner = packagesWindows
++  const macOSSigning = packagesMacOS && !unsigned ? resolveMacOSSigningEnvironment(env) : undefined
++  if (packagesMacOS && !unsigned) resolveMacOSNotarizationEnvironment(env)
++  const windowsSigner = packagesWindows && !unsigned
+     ? createWindowsTokenSigner({
+         certificateFile: env.DSH_DESKTOP_WINDOWS_CER_FILE,
+         signTool: env.DSH_DESKTOP_WINDOWS_SIGNTOOL,
+@@ -43,12 +44,18 @@ export function createElectronBuilderConfig(
+   if (windowsSigner !== undefined) {
+     installWindowsNsisBootstrapSigner({ sign: windowsSigner })
+   }
+-  const update = resolveDesktopAutoUpdateConfig(env, resolvedPlatform, resolvedArch)
++  const update = resolveDesktopAutoUpdateConfig(unsigned ? {
++    ...env,
++    DSH_DESKTOP_AUTO_UPDATE_ENV: 'test',
++    DOWNLOAD_TEST_ORIGIN: 'https://updates.invalid',
++  } : env, resolvedPlatform, resolvedArch)
+   const buildPaths = desktopTargetBuildPaths(update.target)
++  const coreBinary = env.BETA_EASYSBATCH_CORE_BINARY
++  const coreName = resolvedPlatform === 'win32' ? 'BetaEasySbatchCore.exe' : 'BetaEasySbatchCore'
+   return {
+     appId,
+-    productName: 'DeepSeek Harness',
+-    artifactName: 'deepseek-harness-${version}-${os}-${arch}.${ext}',
++    productName: 'Beta EasySbatch',
++    artifactName: 'Beta-EasySbatch-${version}-${os}-${arch}.${ext}',
+     directories: { output: buildPaths.artifacts },
+     asar: true,
+     files: [
+@@ -60,25 +67,26 @@ export function createElectronBuilderConfig(
+     extraResources: [
+       { from: buildPaths.runtime, to: 'runtime' },
+       { from: buildPaths.seed, to: 'seed' },
++      ...(coreBinary === undefined ? [] : [{ from: coreBinary, to: `beta-easysbatch/${coreName}` }]),
+     ],
+     mac: {
+       category: 'public.app-category.developer-tools',
+       identity: macOSSigning?.signingIdentity,
+-      forceCodeSigning: true,
+-      hardenedRuntime: true,
+-      notarize: true,
++      forceCodeSigning: !unsigned,
++      hardenedRuntime: !unsigned,
++      notarize: !unsigned,
+       target: ['dmg', 'zip'],
+     },
+     dmg: {
+-      sign: true,
++      sign: !unsigned,
+       writeUpdateInfo: false,
+     },
+     afterSign: context => {
+-      if (context.electronPlatformName !== 'darwin') return
++      if (context.electronPlatformName !== 'darwin' || unsigned) return
+       verifyMacOSSignatureAfterSign(context, macOSSigning ?? resolveMacOSSigningEnvironment(env))
+     },
+     artifactBuildCompleted: artifact => {
+-      if (!artifact.file.endsWith('.dmg')) return
++      if (!artifact.file.endsWith('.dmg') || unsigned) return
+       return notarizeMacOSDiskImageArtifact(
+         artifact,
+         env,
+@@ -86,7 +94,7 @@ export function createElectronBuilderConfig(
+       )
+     },
+     win: {
+-      forceCodeSigning: true,
++      forceCodeSigning: !unsigned,
+       signtoolOptions: {
+         sign: windowsSigner,
+         signingHashAlgorithms: ['sha256'],
+@@ -102,7 +110,7 @@ export function createElectronBuilderConfig(
+       allowToChangeInstallationDirectory: true,
+       differentialPackage: true,
+     },
+-    publish: [{ provider: 'generic', url: update.publicUrl }],
++    publish: unsigned ? undefined : [{ provider: 'generic', url: update.publicUrl }],
+   }
+ }
+
+diff --git a/apps/desktop/src/locale.ts b/apps/desktop/src/locale.ts
+index b666cfd..968cbc4 100644
+--- a/apps/desktop/src/locale.ts
++++ b/apps/desktop/src/locale.ts
+@@ -2,7 +2,7 @@
+
+ export const en = {
+   application: 'Application',
+-  startupFailed: 'DeepSeek Harness could not start',
++  startupFailed: 'Beta EasySbatch could not start',
+   pluginsMenu: 'Desktop Plugins…',
+   pluginsMenuPackagedOnly: 'Desktop Plugins… (available in packaged applications)',
+   checkUpdatesMenu: 'Check for Updates…',
+@@ -10,14 +10,14 @@ export const en = {
+   unknownError: 'Unknown error',
+   updateCheckTitle: 'Check for Updates',
+   updateCurrent: 'You already have the latest version.',
+-  updateTitle: 'DeepSeek Harness Update',
++  updateTitle: 'Beta EasySbatch Update',
+   updateAvailable: 'An update is available',
+-  updateDetail: 'DeepSeek Harness {version}\n\nThis release includes its matching dsh version. The application will restart after installation.',
++  updateDetail: 'Beta EasySbatch {version}\n\nThis release includes its matching dsh version. The application will restart after installation.',
+   installAndRestart: 'Install and Restart',
+   later: 'Later',
+   updateFailedTitle: 'Update Failed',
+   pluginManagerTitle: 'Desktop Plugins',
+-  pluginWindowTitle: 'DeepSeek Harness — Desktop Plugins',
++  pluginWindowTitle: 'Beta EasySbatch — Desktop Plugins',
+   pluginManagerDescription: 'Plugins are installed only in the Desktop node_modules and are managed by the bundled pnpm.',
+   refresh: 'Refresh',
+   npmPackage: 'npm package',
+@@ -41,7 +41,7 @@ export type DesktopMessages = { readonly [Key in keyof typeof en]: string }
+
+ export const zh = {
+   application: '应用',
+-  startupFailed: 'DeepSeek Harness 无法启动',
++  startupFailed: 'Beta EasySbatch 无法启动',
+   pluginsMenu: '桌面插件…',
+   pluginsMenuPackagedOnly: '桌面插件…（打包应用中可用）',
+   checkUpdatesMenu: '检查更新…',
+@@ -49,14 +49,14 @@ export const zh = {
+   unknownError: '未知错误',
+   updateCheckTitle: '检查更新',
+   updateCurrent: '当前已是最新版本。',
+-  updateTitle: 'DeepSeek Harness 更新',
++  updateTitle: 'Beta EasySbatch 更新',
+   updateAvailable: '发现可用更新',
+-  updateDetail: 'DeepSeek Harness {version}\n\n新版本绑定匹配的 dsh，安装后将重新启动。',
++  updateDetail: 'Beta EasySbatch {version}\n\n新版本绑定匹配的 dsh，安装后将重新启动。',
+   installAndRestart: '安装并重启',
+   later: '稍后',
+   updateFailedTitle: '更新失败',
+   pluginManagerTitle: '桌面插件',
+-  pluginWindowTitle: 'DeepSeek Harness — 桌面插件',
++  pluginWindowTitle: 'Beta EasySbatch — 桌面插件',
+   pluginManagerDescription: '插件只安装到桌面端自己的 node_modules，并由内置 pnpm 管理。',
+   refresh: '刷新',
+   npmPackage: 'npm 包',
+diff --git a/apps/desktop/scripts/package-target.ts b/apps/desktop/scripts/package-target.ts
+index 6485515..08c82bd 100644
+--- a/apps/desktop/scripts/package-target.ts
++++ b/apps/desktop/scripts/package-target.ts
+@@ -256,6 +256,18 @@ async function main(): Promise<void> {
+   }
+   await runPnpm(['run', 'build:official'], buildEnv, REPOSITORY_ROOT)
+   await runPnpm(['run', 'release:pack', '--family', 'dsh', '--out', buildPaths.packedDsh], buildEnv, REPOSITORY_ROOT)
++  for (const packageDirectory of [
++    'packages/easysbatch/dsh-tool',
++    'packages/easysbatch/dsh-bundle',
++  ]) {
++    await runPnpm([
++      '--dir',
++      packageDirectory,
++      'pack',
++      '--pack-destination',
++      buildPaths.packedDsh,
++    ], buildEnv, REPOSITORY_ROOT)
++  }
+   await runPnpm([
+     '--dir',
+     'apps/desktop-host',
+diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
+index 8bc9fdc..ac043f8 100644
+--- a/apps/desktop/src/main.ts
++++ b/apps/desktop/src/main.ts
+@@ -1,7 +1,7 @@
+ /** Electron shell: desktop project ownership, custom protocol, windows, and lifecycle. */
+
+ import { readFile, writeFile } from 'node:fs/promises'
+-import { extname, join, normalize, resolve, sep } from 'node:path'
++import { extname, isAbsolute, join, normalize, resolve, sep } from 'node:path'
+ import { fileURLToPath } from 'node:url'
+ import {
+   app,
+@@ -21,6 +21,8 @@ import { claimDesktopSingleInstance } from './single-instance.ts'
+ import { DesktopUpdateCoordinator } from './update-coordinator.ts'
+
+ const SCHEME = 'dsh-app'
++const PLUGIN_MANAGEMENT_ENABLED = false
++const UPDATES_ENABLED = process.env.BETA_EASYSBATCH_ENABLE_UPDATES === '1'
+ let focusPrimaryWindow = (): void => {}
+
+ function errorOf(reason: unknown, fallback: string): Error {
+@@ -62,6 +64,21 @@ function runtimeResources(): RuntimeResources {
+   return { node, pnpm, seed }
+ }
+
++function productCoreBinary(): string {
++  if (app.isPackaged) {
++    return join(
++      process.resourcesPath,
++      'beta-easysbatch',
++      process.platform === 'win32' ? 'BetaEasySbatchCore.exe' : 'BetaEasySbatchCore',
++    )
++  }
++  const configured = process.env.BETA_EASYSBATCH_CORE_BINARY
++  if (configured === undefined || configured === '' || !isAbsolute(configured)) {
++    throw new Error('Beta EasySbatch development requires BETA_EASYSBATCH_CORE_BINARY')
++  }
++  return resolve(configured)
++}
++
+ function developmentProject(): string | undefined {
+   const configured = process.env.DSH_DESKTOP_DEV_PROJECT_DIR
+   if (configured === undefined || configured === '') return undefined
+@@ -132,7 +149,13 @@ async function serveShellAsset(request: Request): Promise<Response> {
+
+ async function main(): Promise<void> {
+   const resources = runtimeResources()
+-  const paths = resolveDesktopPaths()
++  const productHome = app.isPackaged
++    ? join(app.getPath('userData'), 'harness')
++    : resolve(process.env.DSH_HOME ?? join(app.getPath('userData'), 'harness'))
++  process.env.DSH_HOME = productHome
++  process.env.BETA_EASYSBATCH_CORE_BINARY = productCoreBinary()
++  process.env.BETA_EASYSBATCH_PROFILES_PATH ??= join(productHome, 'profiles.yaml')
++  const paths = resolveDesktopPaths(productHome)
+   const development = developmentProject()
+   const activeProject = development ?? paths.profile
+   const hostInspectPort = developmentHostInspectPort(development !== undefined)
+@@ -232,6 +255,7 @@ async function main(): Promise<void> {
+
+   const mutate = async (event: IpcMainInvokeEvent, mutation: Parameters<DesktopProjectManager['mutate']>[0]): Promise<void> => {
+     assertDesktopSender(event, ['shell'])
++    if (!PLUGIN_MANAGEMENT_ENABLED) throw new Error('Beta EasySbatch desktop plugins are disabled')
+     if (development !== undefined) {
+       throw new Error('dsh desktop: plugin package changes require a packaged application')
+     }
+@@ -328,14 +352,14 @@ async function main(): Promise<void> {
+   Menu.setApplicationMenu(Menu.buildFromTemplate([{
+     label: process.platform === 'darwin' ? app.name : messages.application,
+     submenu: [
+-      {
++      ...(PLUGIN_MANAGEMENT_ENABLED ? [{
+         label: development === undefined ? messages.pluginsMenu : messages.pluginsMenuPackagedOnly,
+         accelerator: 'CmdOrCtrl+,',
+         enabled: development === undefined,
+         click: openPluginWindow,
+-      },
+-      { label: messages.checkUpdatesMenu, click: () => { void checkAndPrompt(true) } },
+-      { type: 'separator' },
++      }] : []),
++      ...(UPDATES_ENABLED ? [{ label: messages.checkUpdatesMenu, click: () => { void checkAndPrompt(true) } }] : []),
++      ...((PLUGIN_MANAGEMENT_ENABLED || UPDATES_ENABLED) ? [{ type: 'separator' as const }] : []),
+       { role: 'quit' },
+     ],
+   }]))
+@@ -365,7 +389,7 @@ async function main(): Promise<void> {
+     mainWindow.webContents.openDevTools({ mode: 'detach' })
+   }
+   publishUpdate(updateState)
+-  setTimeout(() => { void checkAndPrompt(false) }, 10_000)
++  if (UPDATES_ENABLED) setTimeout(() => { void checkAndPrompt(false) }, 10_000)
+
+   app.on('activate', () => {
+     if (BrowserWindow.getAllWindows().length === 0) focusPrimaryWindow()
+diff --git a/apps/desktop/src/project-manager.ts b/apps/desktop/src/project-manager.ts
+index b9b94f7..fe1b204 100644
+--- a/apps/desktop/src/project-manager.ts
++++ b/apps/desktop/src/project-manager.ts
+@@ -102,7 +102,11 @@ interface DesktopSeedIntegrityRecord {
+ const PROJECT_NAME = '@deepseek-ai/dsh-desktop-runtime'
+ const DSH_PACKAGE = '@deepseek-ai/dsh'
+ const CORE_BUILD_PACKAGE = '@deepseek-ai/dsh-subprocess-local'
+-const DESKTOP_PROFILE_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'] as const
++const DESKTOP_PROFILE_BUNDLES = [
++  '@deepseek-ai/dsh-base',
++  '@deepseek-ai/dsh-web-app',
++  '@beta-easysbatch/dsh-bundle',
++] as const
+ const WORKSPACE_SETTINGS = 'nodeLinker: hoisted\nautoInstallPeers: false\nstrictDepBuilds: true\n'
+ const PACKAGE_NAME_PATTERN = /^(?:@[a-z0-9][a-z0-9._~-]*\/[a-z0-9][a-z0-9._~-]*|[a-z0-9][a-z0-9._~-]*)$/u
+ const VERSION_PATTERN = /^[0-9A-Za-z][0-9A-Za-z.+_-]*$/u
+diff --git a/packages/client/ui-brand-official/src/client/Brand.tsx b/packages/client/ui-brand-official/src/client/Brand.tsx
+index 9ac6dd7..2049b48 100644
+--- a/packages/client/ui-brand-official/src/client/Brand.tsx
++++ b/packages/client/ui-brand-official/src/client/Brand.tsx
+@@ -1,4 +1,3 @@
+-import { BrandWordmark, FishLogo } from '@deepseek-ai/dsh-client-ui-primitives'
+ import type { SidebarBrandMarkOwnerProps } from '@deepseek-ai/dsh-client-ui-sidebar/client'
+
+ /**
+@@ -7,7 +6,19 @@ import type { SidebarBrandMarkOwnerProps } from '@deepseek-ai/dsh-client-ui-side
+  * @returns the official whale mark.
+  */
+ export function OfficialBrandMark({ size }: SidebarBrandMarkOwnerProps) {
+-  return <FishLogo size={size} />
++  return <div style={{
++    alignItems: 'center',
++    background: 'linear-gradient(145deg, #2563eb, #0f766e)',
++    borderRadius: Math.max(6, Math.round(size * 0.28)),
++    color: '#fff',
++    display: 'flex',
++    fontSize: Math.round(size * 0.72),
++    fontWeight: 800,
++    height: size,
++    justifyContent: 'center',
++    lineHeight: 1,
++    width: size,
++  }}>β</div>
+ }
+
+ /**
+@@ -15,5 +26,7 @@ export function OfficialBrandMark({ size }: SidebarBrandMarkOwnerProps) {
+  * @returns the official name wordmark.
+  */
+ export function OfficialBrandName() {
+-  return <BrandWordmark includeMark={false} />
++  return <div style={{ fontSize: 15, fontWeight: 700, letterSpacing: '-0.02em', whiteSpace: 'nowrap' }}>
++    Beta EasySbatch
++  </div>
+ }

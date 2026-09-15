@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>作业提交</h1>
+<p>选择工作目录，描述任务，检查方案后提交。</p>
+<div class="actions">
+  <a class="button" href="/new">新建任务</a>
+  <a class="button secondary" href="/jobs">任务记录</a>
+</div>
+<section>
+  <h2>每次提交都有可查看的记录</h2>
+  <p>任务详情保留运行配置、脚本与最近状态。</p>
+  <p>请检查预览，再点击“确认并提交”。</p>
+</section>
+{% endblock %}

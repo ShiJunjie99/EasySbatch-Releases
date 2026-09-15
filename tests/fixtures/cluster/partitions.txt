@@ -1,0 +1,4 @@
+cpu*|up|infinite|n/a
+gpu|up|2-00:00:00|00:30:00
+gpu|up|2-00:00:00|00:30:00
+maintenance|down|01:00:00|n/a

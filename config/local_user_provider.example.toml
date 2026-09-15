@@ -1,0 +1,24 @@
+# M10-B7 server-side application config.  It intentionally contains no API key.
+# Copy to .sbatch-agent/local_user_provider.toml and adjust only local paths.
+[ai]
+provider = "deepseek"
+model = "deepseek-chat"
+endpoint = "https://api.deepseek.com/chat/completions"
+transport_mode = "local_user_provider"
+timeout = 60
+ca_bundle = ""
+
+[web]
+port = 8000
+database_path = ".sbatch-agent/jobs.sqlite3"
+runs_root = ".sbatch-agent/runs"
+profiles_path = ""
+authentication_enabled = false
+ssh_host = "cluster.example.edu"
+ssh_port = 22
+session_idle_timeout_seconds = 1800
+session_cookie_secure = false
+deployment_mode = "loopback_legacy"
+public_base_url = ""
+# worker_broker_socket = "/tmp/easysbatch-<central-uid>/broker.sock"
+# ssh_known_hosts = "/home/user/.ssh/known_hosts"

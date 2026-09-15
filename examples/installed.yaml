@@ -1,0 +1,39 @@
+# Illustrative GROMACS command structure; no simulation or cluster validation.
+project_dir: /shared/projects/gromacs-demo
+work_dir: /shared/projects/gromacs-demo
+run_type: installed
+entrypoint: gmx_mpi
+environment_profile:
+  id: example-gromacs
+  version: "1"
+prepare_steps:
+  - kind: command
+    executable: gmx_mpi
+    args:
+      - grompp
+      - -f
+      - mdp/em.mdp
+      - -c
+      - polymer/resin_bcb_melt.gro
+      - -p
+      - topol.top
+      - -o
+      - em.tpr
+run_step:
+  executable: gmx_mpi
+  args: [mdrun, -deffnm, em, -ntomp, "1"]
+resources:
+  partition: example_cpu
+  nodes: 1
+  ntasks: 1
+  cpus_per_task: 1
+  memory_mib: 4096
+  time_limit_seconds: 1800
+evidence: []
+unresolved:
+  - field: environment_profile
+    reason: 示例软件配置，实际使用前需要登记并验证。
+  - field: run_step
+    reason: 启动命令和资源仅示意，尚未验证此 GROMACS 安装及输入能否运行。
+source_fingerprints: []
+spec_version: 1

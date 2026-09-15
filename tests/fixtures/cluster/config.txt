@@ -1,0 +1,4 @@
+Configuration data as of 2026-01-01T00:00:00
+AccountingStorageType = accounting_storage/slurmdbd
+ClusterName           = offline-cluster
+SelectType            = select/cons_tres

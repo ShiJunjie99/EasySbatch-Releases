@@ -1,0 +1,71 @@
+{% from 'partials/macros.html' import badge, loading %}
+{% from 'partials/resource_policy_control.html' import resource_control with context %}
+{% macro control(key) %}
+{% if key in ('memory_mib', 'time_limit_seconds') %}
+{{ resource_control(key, 'smart-', values, policy_recommendations) }}
+{% else %}
+<label for="smart-{{ key }}">{{ labels[key] }}
+{% if key in options %}<select id="smart-{{ key }}" name="{{ key }}">
+  <option value="">待确认 / 可选项留空</option>
+  {% for value, label in options[key] %}<option value="{{ value }}"{% if values[key] == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
+</select>
+{% elif key in arrays %}<textarea id="smart-{{ key }}" name="{{ key }}" rows="3" spellcheck="false" placeholder="{{ placeholders.get(key, '') }}">{{ values[key] }}</textarea>
+{% else %}<input id="smart-{{ key }}" name="{{ key }}" value="{{ values[key] }}" placeholder="{{ placeholders.get(key, '') }}" type="{{ 'number' if key in numbers else 'text' }}"{% if key in numbers %} min="{{ 0 if key == 'gpu_count' else 1 }}" step="1"{% endif %}>
+{% endif %}
+</label>
+{% endif %}
+{% endmacro %}
+<article class="prepared-task" data-prepared-id="{{ prepared.id }}" data-prepare-request-id="{{ prepared.prepare_request_id or '' }}" tabindex="-1">
+<div class="page-pretitle">任务预览</div>
+<div class="heading"><h2>{{ '提交前确认' if prepared.state == 'READY_TO_SUBMIT' else '补齐任务信息' }}</h2>{{ badge(prepared.state) }}</div>
+<div class="scan-summary" aria-label="项目摘要">{% for item in project_summary(file_tree) %}<span>📄 <span class="file-path">{{ item.relative_path }}</span> {% for tag in item.tags if tag != 'Evidence' or item.tags|length == 1 %}<span class="badge bg-secondary-lt">{{ file_tag_label(tag) }}</span>{% endfor %}</span>{% endfor %}</div>
+{% include 'partials/alerts.html' %}
+{% if attempted %}<p class="warning">此记录已进入提交流程，禁止修改或普通重试。<a href="/jobs/{{ prepared.id }}">查看任务详情</a>；若记录暂不可用，请人工核对，不要重复提交。</p>{% endif %}
+{% if not attempted %}
+<form method="post" action="/new/prepared/{{ prepared.id }}/continue" hx-post="/new/prepared/{{ prepared.id }}/continue" hx-target="#smart-prepare-result" hx-indicator="#continue-loading" hx-disabled-elt="find button, find [data-policy-mode], find [data-policy-input]" hx-sync="#smart-prepare-result:drop" data-partial-form>
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="revision" value="{{ prepared.revision }}">
+  {% if prepared.unresolved_fields %}<fieldset id="unresolved"><legend>⚠ 需要确认 {{ prepared.unresolved_fields|length }} 项</legend>
+    {% for q in prepared.unresolved_fields %}<div>{{ control(q.field) }}<details class="field-evidence"><summary>为什么需要填写？</summary><small>{{ q.reason }}</small></details></div>{% endfor %}
+  </fieldset>{% endif %}
+  <div class="grid resource-policy-grid">{% for key in ('memory_mib', 'time_limit_seconds') if key not in prepared.unresolved_fields|map(attribute='field')|list %}{{ control(key) }}{% endfor %}</div>
+  <details id="advanced-settings"><summary>高级设置 · 修改已匹配配置</summary>
+    <div class="grid">{% for key in advanced_fields %}{{ control(key) }}{% endfor %}</div>
+    <p class="hint">含空格的参数请加引号；准备步骤会执行代码，请核对后继续。</p>
+  </details>
+  <button type="submit" class="{{ 'btn btn-primary' if prepared.unresolved_fields else 'btn' }}">{{ '继续' if prepared.unresolved_fields else '更新预览' }}</button>{{ loading('continue-loading', '正在校验…') }}
+</form>
+{% endif %}
+<section aria-label="任务配置"><h3>任务配置</h3>
+{% for title, keys in review_groups %}
+{% if title == '其他配置' %}<details><summary>其他配置 · 工作目录、启动器与日志</summary>{% endif %}
+<section class="review-group"><h3>{{ title }}</h3><div class="table-wrap"><table class="table table-vcenter review-table"><thead><tr><th>字段</th><th>值</th><th>来源 / 依据</th></tr></thead><tbody>
+{% for key in keys if key in prepared.resolved_fields %}{% set origin = prepared.resolved_fields[key] %}
+<tr><td>{{ '输入文件' if key == 'required_inputs' else labels[key] }}</td><td title="{{ review_values[key] }}">{% if key in ('entrypoint', 'executable', 'work_dir', 'required_inputs', 'args', 'prepare_steps', 'stdout', 'stderr') %}<code>{{ display_values[key] if display_values[key] else '—' }}</code>{% else %}{{ display_values[key] if display_values[key] else '—' }}{% endif %}</td>
+<td>{{ badge(origin.source.value, true) }}
+{% if key in catalog_details %}{% set fact = catalog_details[key] %}<small title="{{ fact.display_name }} · 上次复核： {{ fact.last_verified_at.isoformat() if fact.last_verified_at else '尚未复核' }}">{{ verification_label(fact.verification_status) }}</small>{% endif %}
+<details class="field-evidence"><summary>依据</summary><small>{{ origin.reason }}</small>
+{% for ref in origin.evidence_refs[:8] %}{% set ev = evidence_by_id.get(ref) %}{% if ev %}<p>{{ ev.source_path }}{% if ev.line_start %}:{{ ev.line_start }}{% endif %}</p><pre>{{ ev.snippet[:1200] }}</pre>{% endif %}{% endfor %}</details></td></tr>{% endfor %}
+</tbody></table></div></section>{% if title == '其他配置' %}</details>{% endif %}{% endfor %}</section>
+{% if prepared.resource_recommendations %}{% with report=prepared.resource_recommendations, smart_recommendations=true %}{% include 'partials/resource_recommendations.html' %}{% endwith %}
+{% elif prepared.snapshot %}<p class="snapshot-label">{{ snapshot_label(prepared.snapshot) }}；资源需求补齐后再筛选方案。</p>{% endif %}
+{% if prepared.conflicts %}<section><h2>配置冲突</h2><ul>{% for c in prepared.conflicts %}<li>{{ labels.get(c.field, "配置项") }}： {{ c.reason }}</li>{% endfor %}</ul></section>{% endif %}
+{% if snapshot_stale %}<p class="warning">快照已超过 5 分钟；如需更新资源建议，请重新分析。</p>{% endif %}
+{% if prepared.warnings %}<details class="alert alert-warning"><summary>注意事项 · {{ prepared.warnings|length }}</summary><ul>{% for w in prepared.warnings %}<li>{% if w in prepared.ai_analysis.warnings %}<strong>分析阶段提示：</strong>{% endif %}{{ w }}</li>{% endfor %}</ul></details>{% endif %}
+<details class="scan-review"><summary>项目详情与依据</summary>
+<p class="project-root">项目目录： <code>{{ prepared.project_evidence.project_dir }}</code></p>
+<small title="SYSTEM_DEFAULT / Scanner">目录与修订号由系统生成。</small>
+{% if prepared.prepare_request_id %}<small>分析请求编号： <code>{{ prepared.prepare_request_id }}</code></small>{% endif %}
+<small>准备结果修订号：{{ prepared.revision }}</small>
+<a href="/new/prepared/{{ prepared.id }}">打开准备结果</a> · <a href="/new?mode=manual">高级设置 / 手动配置</a>
+{% with project_evidence=prepared.project_evidence, tree_show_root=false, evidence_prefix='smart-scan-' %}{% include 'project_evidence.html' %}{% endwith %}</details>
+{% if prepared.job_spec %}
+<section><h3>运行脚本</h3><details id="shell-preview"><summary>查看生成脚本</summary><pre>{{ prepared.rendered_script }}</pre></details>
+<details id="jobspec-summary"><summary>任务配置详情（JobSpec）</summary><pre>{{ spec_json }}</pre></details></section>
+{% if not attempted and not errors %}<form method="post" action="/new/prepared/{{ prepared.id }}/confirm">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="revision" value="{{ prepared.revision }}">
+  <div class="submit-bar"><button type="submit" class="btn btn-primary submit-job">确认并提交</button><strong>此操作将提交真实 Slurm 作业。</strong></div>
+</form>{% endif %}
+{% endif %}
+</article>

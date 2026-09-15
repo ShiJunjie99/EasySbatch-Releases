@@ -1,0 +1,7 @@
+101|RUNNING|cpu|test-user|None
+102|PENDING|gpu|test-user|Priority
+103|PENDING|gpu|other-user|Resources
+104|PENDING|cpu|other-user|Dependency
+105|SUSPENDED|gpu|other-user|None
+106_1|RUNNING|gpu|other-user|None
+106_2|PENDING|gpu|other-user|Priority

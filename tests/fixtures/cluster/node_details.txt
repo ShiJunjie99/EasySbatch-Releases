@@ -1,0 +1,4 @@
+node01|0|(null)
+node02|8192|gpu:rtx6000:2(IDX:0,1),gpu:a100:0(IDX:N/A)
+node02|8192|gpu:rtx6000:2(IDX:0,1),gpu:a100:0(IDX:N/A)
+node03|0|gpu:rtx_2080:0(IDX:N/A)

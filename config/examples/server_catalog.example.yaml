@@ -1,0 +1,26 @@
+# Synthetic public catalog example.  Replace paths and verification evidence
+# with facts from the target cluster in a private deployment catalog.
+metadata:
+  schema_version: 1
+  description: Public example only
+environments:
+  - id: example-python
+    display_name: Python example environment
+    type: module
+    version: '1'
+    environment_profile: {id: example-python, version: '1'}
+    source: {document: Example audit, section: Environment, detail: Synthetic data}
+    verification_status: DOCUMENTED
+    verification_scope: Example only; verify on the target cluster
+software:
+  - id: example-python
+    display_name: Python
+    aliases: [python]
+    executable: /opt/example/python/bin/python
+    version: '3.11'
+    environment_profile: {id: example-python, version: '1'}
+    run_type: installed
+    source: {document: Example audit, section: Software, detail: Synthetic path}
+    verification_status: DOCUMENTED
+    verification_scope: Example only; verify on the target cluster
+compilers: []

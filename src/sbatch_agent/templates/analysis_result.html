@@ -1,0 +1,28 @@
+{% from 'partials/macros.html' import badge %}
+<section aria-label="AI 分析结果">
+  <h2>AI 分析结果 · 未确认草稿</h2>
+  <p class="hint">请核对推断与待确认项，再准备提交。</p>
+  <details><summary>分析信息</summary><p>{{ analysis.model_metadata.provider }} / {{ analysis.model_metadata.model }} · {{ analysis.model_metadata.analyzed_at.isoformat() }}</p></details>
+  {% for field, proposal in analysis_fields %}
+    <article>
+      <h3><span title="{{ field }}">{{ field_label(field) }}</span> {{ badge(proposal.status, true) }}</h3>
+      <pre>{{ proposal.model_dump(mode='json')['value']|tojson(indent=2) }}</pre>
+      <details><summary>判断依据</summary><p>{{ proposal.reason }}</p>
+      {% for ref in proposal.evidence_refs %}
+        {% for item in project_evidence.evidence_items if item.id == ref %}
+          <details><summary>{{ item.id }} · {{ item.source_path }}{% if item.line_start %}:{{ item.line_start }}–{{ item.line_end }}{% endif %}</summary>
+            <pre>{{ item.snippet }}</pre>
+          </details>
+        {% endfor %}
+      {% endfor %}</details>
+    </article>
+  {% endfor %}
+  <h3>环境匹配 <span title="{{ analysis.draft.environment_resolution.status }}">{{ '已自动匹配' if analysis.draft.environment_resolution.status == 'MATCHED' else '需要确认' }}</span></h3>
+  <details><summary>匹配依据</summary><p>{{ analysis.draft.environment_resolution.reason }}</p></details>
+  <ul>{% for p in analysis.draft.environment_resolution.choices %}<li>{{ p.id }} / {{ p.version }}</li>{% endfor %}</ul>
+  <h3>待确认项</h3>
+  <ul>{% for item in analysis.draft.unresolved %}<li><strong title="{{ item.field }}">{{ field_label(item.field) }}</strong><details><summary>需要确认的原因</summary>{{ item.reason }}</details></li>{% endfor %}</ul>
+  {% if analysis.conflicts %}<details class="warning"><summary>⚠ 配置冲突 · {{ analysis.conflicts|length }} 项</summary><ul>{% for item in analysis.conflicts %}<li>{{ field_label(item.field) }}: {{ item.reason }} · {{ item.evidence_refs|join(', ') }}</li>{% endfor %}</ul></details>{% endif %}
+  {% if analysis.warnings %}<details class="warning"><summary>⚠ 注意事项 · {{ analysis.warnings|length }} 项</summary><ul>{% for item in analysis.warnings %}<li>{{ item }}</li>{% endfor %}</ul></details>{% endif %}
+  {% if analysis.notes %}<h3>备注</h3><ul>{% for item in analysis.notes %}<li>{{ item }}</li>{% endfor %}</ul>{% endif %}
+</section>

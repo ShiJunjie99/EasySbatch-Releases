@@ -1,0 +1,4 @@
+node01|cpu|idle|0/8/0/8|32000|(null)|none
+node02|gpu|mixed|8/24/0/32|128000|gpu:rtx6000:4(S:0-1),gpu:a100:2(S:0-1)|none
+node02|cpu|mixed|8/24/0/32|128000|gpu:rtx6000:4(S:0-1),gpu:a100:2(S:0-1)|none
+node03|maintenance|down*|0/0/16/16|64000|gpu:rtx_2080:4|scheduled maintenance

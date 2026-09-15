@@ -1,0 +1,24 @@
+{% from 'partials/macros.html' import badge %}
+{% if message %}<div class="alert alert-info" role="status">{{ message }}</div>{% endif %}
+{% if record.submission_state.value == 'SUBMISSION_UNKNOWN' %}
+<div class="alert alert-warning" role="alert"><div><strong>提交结果无法确认，请先核对 Slurm，勿重复提交。</strong></div></div>
+{% elif record.submission_state.value == 'SUBMITTING' %}
+<p class="alert alert-warning" role="alert">提交已开始，尚未保存明确结果。进程中断可能保留此状态；请核对 Slurm，不能再次提交此记录。</p>
+{% elif record.submission_state.value == 'SUBMIT_FAILED' %}
+<p class="alert alert-danger" role="alert">本次提交已失败。历史快照仍然保留；请由维护者查看错误记录，本页面不提供重试。</p>
+{% endif %}
+<div class="card"><div class="card-body">
+<div class="heading"><h2>Slurm 作业 <span class="job-id">{{ record.slurm_job_id or '· 尚未绑定' }}</span></h2></div>
+<dl><dt>提交状态</dt><dd>{{ badge(record.submission_state.value) }}</dd>
+<dt>运行状态</dt><dd>{{ badge(record.normalized_slurm_state.value if record.normalized_slurm_state is not none else '尚未查询') }}</dd>
+<dt>状态原因</dt><dd><span title="{{ record.status_reason or '' }}">{{ queue_reason_label(record.status_reason) }}</span></dd>
+<dt>Slurm 作业编号</dt><dd class="job-id">{{ record.slurm_job_id or '尚未绑定' }}</dd>
+<dt>集群</dt><dd>{{ record.cluster_name or '未返回' }}</dd>
+<dt>退出码 / 信号</dt><dd>{{ record.exit_code if record.exit_code is not none else '—' }} / {{ record.signal if record.signal is not none else '—' }}</dd>
+</dl><details><summary>查询详情</summary><dl>
+<dt>原始运行状态</dt><dd>{{ record.raw_slurm_state if record.raw_slurm_state is not none else '—' }}</dd>
+<dt>原始状态原因</dt><dd>{{ record.status_reason or '—' }}</dd>
+{% if record.job_status %}<dt>原始退出码</dt><dd>{{ record.raw_exit_code or '—' }}</dd><dt>开始时间</dt><dd>{{ record.job_status.start or '未返回' }}</dd><dt>结束时间</dt><dd>{{ record.job_status.end or '未返回' }}</dd>{% endif %}
+<dt>更新时间 · UTC</dt><dd>{{ record.updated_at.isoformat() }}</dd>
+</dl></details><p class="hint mb-0">显示最近保存的状态；状态未知不代表已完成。</p>
+</div></div>

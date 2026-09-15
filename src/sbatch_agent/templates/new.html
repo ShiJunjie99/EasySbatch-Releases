@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% from 'partials/macros.html' import loading %}
+{% from 'partials/resource_policy_control.html' import resource_control with context %}
+{% block title %}新建任务 · EasySbatch{% endblock %}
+{% macro field(key, label, type="text", required=false, hint="") %}
+<label for="{{ key }}">{{ label }}{% if required %} <span aria-hidden="true">*</span>{% endif %}
+  <input id="{{ key }}" name="{{ key }}" type="{{ type }}" value="{{ form[key] }}" placeholder="{{ placeholders.get(key, '') }}"{% if required %} required{% endif %}{% if type == "number" %} min="{{ 0 if key == 'gpu_count' else 1 }}" step="1"{% endif %}{% if hint %} title="{{ hint }}"{% endif %}>
+</label>
+{% endmacro %}
+{% macro array_field(key, label, hint) %}
+<label class="wide" for="manual-{{ key }}">{{ label }}
+  <textarea id="manual-{{ key }}" name="{{ key }}" rows="3" spellcheck="false" placeholder="{{ placeholders.get(key, '') }}" title="{{ hint }}">{{ form[key] }}</textarea>
+</label>
+{% endmacro %}
+{% block content %}
+<h1>新建任务</h1>
+{% include 'partials/alerts.html' %}
+{% if not environments %}<p class="warning">⚠ 尚未登记运行环境，请联系维护者。</p>{% endif %}
+<div class="card smart-start"><div class="card-body">
+<form id="smart-prepare-form" method="post" action="/new/prepare" aria-label="智能配置" hx-post="/new/prepare" hx-target="#smart-prepare-result" hx-swap="innerHTML" hx-indicator="#prepare-loading" hx-disabled-elt="#smart-prepare-form button, #smart-prepare-form select, #smart-prepare-form [data-policy-input], [data-analysis-retry], #choose-folder, #smart-intent, #smart-project" hx-sync="this:drop" data-partial-form>
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  {% include 'partials/working_folder.html' %}
+  <label for="smart-intent">任务描述
+    <textarea id="smart-intent" name="task_intent" rows="2" maxlength="2000" required placeholder="例如：使用 input.json 运行一次自洽场计算">{{ task_intent }}</textarea>
+  </label>
+  <div class="grid resource-policy-grid">
+    {{ resource_control('memory_mib', 'prepare-', form, {}, true) }}
+    {{ resource_control('time_limit_seconds', 'prepare-', form, {}, true) }}
+  </div>
+  <div class="action-row"><button id="analyze-prepare" type="submit" class="btn btn-primary" disabled>分析并准备</button>{{ loading('prepare-loading') }}</div>
+  <noscript><p>请选择文件夹，或在高级设置中填写路径。</p><button type="submit">分析并准备（无 JavaScript）</button></noscript>
+</form>
+</div></div>
+<div id="folder-picker" class="result-region" aria-live="polite">{% if folder_listing or folder_error %}{% include 'partials/folder_picker.html' %}{% endif %}</div>
+<div id="smart-prepare-result" class="result-region" aria-live="polite">{% include 'partials/prepare_error.html' %}</div>
+<details id="manual-mode"{% if manual_open %} open{% endif %}>
+<summary>高级设置 · 手动配置</summary>
+<label for="smart-project">工作目录 · 手动输入
+  <input id="smart-project" name="project_dir" form="smart-prepare-form" value="{{ '' if selected_folder else form.project_dir }}" placeholder="{{ placeholders.project_dir }}" title="填写工作区内的绝对路径。">
+</label>
+<details class="ai-readiness"><summary>AI 分析：
+  {% if ai_status.state == 'available' %}可用{% elif ai_status.state == 'unavailable' %}当前不可用{% elif ai_status.state == 'not_configured' %}未配置{% elif ai_status.state == 'credential_missing' %}凭据未就绪{% else %}配置无效{% endif %}
+</summary>{% if ai_status.model %}<p>模型： {{ ai_status.model }}</p>{% endif %}
+{% if ai_status.state == 'available' %}<p class="hint">配置已就绪；分析时才检查连接与权限。</p>
+{% elif ai_status.state == 'unavailable' %}<p class="hint">AI 分析当前不可用，你仍可以使用手动模式。</p>
+{% elif ai_status.state == 'not_configured' %}<p class="hint">AI 未配置，仍可扫描项目或手动配置。</p>
+{% elif ai_status.state == 'credential_missing' %}<p class="hint">凭据未就绪，请联系维护者；仍可手动配置。</p>
+{% else %}<p class="hint">后端模型配置不完整或无效；手工模式仍可使用。</p>{% endif %}</details>
+{% if catalog_facts %}<details><summary>软件目录 · 登记与复核详情</summary>{% for fact in catalog_facts %}<p>{{ fact.display_name }} / {{ fact.version or '版本未知' }} · {{ verification_label(fact.verification_status) }}<small>上次复核： {{ fact.last_verified_at.isoformat() if fact.last_verified_at else '尚未复核' }} · {{ fact.verification_scope }}</small></p>{% endfor %}</details>{% endif %}
+<form method="post" action="/new" id="manual-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <fieldset><legend>任务信息</legend><div class="grid">
+    {{ field('name', '任务名称', required=true) }}
+    <label for="run_type">运行方式 *
+      <select id="run_type" name="run_type" required>
+        {% if form.run_type not in ['python', 'compiled', 'installed'] %}<option value="{{ form.run_type }}" selected>无效运行方式：{{ form.run_type }}</option>{% endif %}
+        {% for kind, label in [('python', 'Python 脚本'), ('compiled', '编译后运行'), ('installed', '已安装软件')] %}<option value="{{ kind }}"{% if form.run_type == kind %} selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select><small>编译后运行需填写准备步骤。</small>
+    </label>
+    {{ field('project_dir', '项目目录', required=true, hint='Web 服务所在机器上的项目绝对路径。扫描只需此字段。') }}
+    {{ field('work_dir', '工作目录', required=true, hint='程序实际运行目录；提交前需已存在且计算节点可访问。') }}
+  </div>
+  <p class="hint">只读扫描，不运行程序。</p>
+  <button type="submit" class="secondary" formaction="/new/scan" formnovalidate hx-post="/new/scan" hx-target="#project-scan-result" hx-indicator="#scan-loading" hx-disabled-elt="this" hx-sync="closest form:drop" data-partial-form>扫描项目</button>{{ loading('scan-loading', '正在扫描项目…') }}
+  </fieldset>
+  <fieldset><legend>程序运行</legend><div class="grid">
+    {% if software_options %}
+    <label for="software_id">运行软件
+      <select id="software_id" name="software_id"><option value="">自定义程序</option>
+      {% for key, label in software_options %}<option value="{{ key }}"{% if form.software_id == key %} selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select><small>已有环境选择不会被覆盖。</small>
+    </label>
+    <button type="submit" class="secondary" formaction="/new/catalog" formnovalidate>使用已登记配置</button>
+    {% else %}<input type="hidden" name="software_id" value="{{ form.software_id }}">{% endif %}
+    {{ field('entrypoint', '入口程序', required=true, hint='脚本、模块名或二进制目标；不会据此猜测启动命令。') }}
+    <label for="environment">运行环境 *
+      <select id="environment" name="environment" required>
+        <option value="">请选择已登记环境</option>
+        {% if form.environment and form.environment not in environments|map(attribute=0)|list %}<option value="{{ form.environment }}" selected>未登记：{{ form.environment }}</option>{% endif %}
+        {% for key, label in environments %}<option value="{{ key }}"{% if form.environment == key %} selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select><small>仅加载所选环境。</small>
+    </label>
+    {% if not software_options %}{{ field('executable', '执行程序', required=true, hint='仅填可执行程序，如 /usr/bin/python3 或 ./build/solver；参数单独填写。') }}{% endif %}
+    {{ array_field('args', '程序参数', '只填参数；含空格的参数请加引号，例如 --input "case 01.json"。不执行变量展开或命令替换；兼容原 JSON 数组。') }}
+    {{ array_field('required_inputs', '输入文件 · JSON 数组', '例如 ["run.py", "case 01.json"]；只检查明确列出的输入，相对路径以 work_dir 为准。') }}
+  </div></fieldset>
+  <fieldset><legend>资源申请</legend><div class="grid">
+    {{ field('partition', '分区', required=true, hint='创建时必填。请求推荐时可留空以评估可见分区；已填写则视为硬要求。') }}
+    {{ field('cpus_per_task', '每进程 CPU 数', type='number', required=true) }}
+    <div id="manual-resource-policies" class="wide">{% include 'partials/manual_resource_policies.html' %}</div>
+    <button type="submit" class="secondary" formaction="/new/resource-policies" formnovalidate hx-post="/new/resource-policies" hx-target="#manual-resource-policies" hx-sync="closest form:drop" hx-disabled-elt="this" data-partial-form>检查可用推荐</button>
+    {{ field('gpu_count', '每节点 GPU 数', type='number', required=true, hint='0 表示不申请 GPU。') }}
+    {{ field('gpu_type', 'GPU 型号 · 可选', hint='仅填写集群已登记的类型；不填写表示仅申请数量。') }}
+    {{ field('stdout', '标准输出路径 · 可选', hint='可用 %j 表示 job id；留空使用 Slurm 默认输出。父目录须预先存在。') }}
+    {{ field('stderr', '错误输出路径 · 可选', hint='留空使用 Slurm 默认行为；这里只记录路径，不读取日志。') }}
+  </div></fieldset>
+  <fieldset><legend>资源推荐 · 可选</legend>
+    <label for="preference">排序偏好
+      <select id="preference" name="preference">
+        {% for preference in preferences %}<option value="{{ preference.value }}"{% if form.preference == preference.value %} selected{% endif %}>{{ preference_label(preference.value) }}</option>{% endfor %}
+      </select>
+    </label>
+    <p class="hint">仅影响推荐排序，不预测等待时间。</p>
+    <button type="submit" class="secondary" formaction="/new/recommend" formnovalidate{% if not environments %} disabled{% endif %}>推荐资源</button>
+  </fieldset>
+  <details><summary>更多配置 · 计费账户、启动器与准备步骤</summary>
+    <div class="grid">
+      {% if software_options %}{{ field('executable', '执行程序 · 自定义路径', hint='软件目录可自动匹配；自定义路径需自行确认。') }}{% endif %}
+      {{ field('account', '计费账户 · 可选') }}
+      {{ field('qos', '服务等级（QOS）· 可选') }}
+      {{ field('nodes', '节点数', type='number', required=true) }}
+      {{ field('ntasks', '进程数', type='number', required=true, hint='多节点或多 task 必须明确选择已登记启动器。') }}
+      <label for="launcher">启动配置 · 可选
+        <select id="launcher" name="launcher">
+          <option value="">直接运行程序</option>
+          {% if form.launcher and form.launcher not in launchers|map(attribute=0)|list %}<option value="{{ form.launcher }}" selected>未登记：{{ form.launcher }}</option>{% endif %}
+          {% for key, label in launchers %}<option value="{{ key }}"{% if form.launcher == key %} selected{% endif %}>{{ label }}</option>{% endfor %}
+        </select>
+      </label>
+      {{ field('spec_version', 'JobSpec 修订号', type='number', required=true) }}
+      {{ array_field('prepare_steps', '准备步骤 · 编译后运行时必填', '[{"kind":"command","executable":"make","args":[]}]；可选 work_dir 为绝对路径。显式 Shell 步骤格式为 {"kind":"shell","script":"…"}，其中内容将作为代码执行。') }}
+      {{ array_field('evidence', '字段依据 · 可选 JSON 数组', '已有字段依据；手动填写的任务可保留 []，不自动分析文件。') }}
+      {{ array_field('source_fingerprints', '文件指纹 · 可选 JSON 数组', '已有 path / sha256 记录；可保留 []，不读取文件或计算摘要。') }}
+      {{ array_field('unresolved', '待确认项 · 需全部解决', '未决项使用 {"field":"…","reason":"…"}；非空会被现有生成器拒绝。') }}
+    </div>
+  </details>
+  <p class="hint">创建后先预览脚本，再确认提交。</p>
+  <button type="submit"{% if not environments %} disabled{% endif %}>生成任务预览</button>
+</form>
+<div id="project-scan-result" class="result-region" aria-live="polite">{% if project_evidence %}{% with errors=(), notice=none %}{% include 'partials/scan_result.html' %}{% endwith %}{% endif %}</div>
+{% if report %}{% include "recommendations.html" %}{% endif %}
+</details>
+{% endblock %}

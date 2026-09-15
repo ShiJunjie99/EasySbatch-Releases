@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/deepseek-ai/deepseek-harness.git",
+  "tag": "dsh-v0.1.5-rc.2",
+  "commit": "fb2c4b9e698e30edb738bca4cf0618587db7d203",
+  "archive_url": "https://github.com/deepseek-ai/deepseek-harness/archive/refs/tags/dsh-v0.1.5-rc.2.tar.gz",
+  "archive_sha256": "00f51f320a054a2aedb8155d84187bfb70f449b7a6a97474c0cc88e5e1f6050c",
+  "license": "MIT"
+}

@@ -1,0 +1,27 @@
+# 可提交的模板不放真实 key。请复制到 .sbatch-agent/deepseek.toml 后填写。
+# 本地文件只供后端读取；不要把填好 key 的文件发送给别人。
+[ai]
+api_key = "<your-key>"  # 只需要在本地副本修改这一项
+provider = "deepseek"
+model = "deepseek-v4-flash"
+endpoint = "https://api.deepseek.com/chat/completions"
+transport_mode = "direct" # legacy server-side template；B7用 local_user_provider 且key只在Launcher本机
+timeout = 60
+ca_bundle = ""  # 默认 CA 路径不可用时，填写系统已有证书包，如 /etc/ssl/cert.pem
+
+[web]
+port = 8000  # 仅监听 127.0.0.1，不开放公网
+database_path = ".sbatch-agent/jobs.sqlite3"
+runs_root = ".sbatch-agent/runs"
+profiles_path = ""  # 如已有 profiles，填写其路径；空值不猜环境
+# workspace_root = "/path/to/your/workspace"  # 目录选择范围；未配置时仅为启动工作目录
+# max_entries_per_directory = 200  # 1–500；只列一级目录，不扫描文件内容
+authentication_enabled = false  # M10-B1：启用 SSH 身份登录
+ssh_host = "cluster.example.edu"       # 固定部署目标；网页不可修改
+ssh_port = 22
+session_idle_timeout_seconds = 1800
+session_cookie_secure = false     # loopback_legacy / ssh_first；LAN HTTPS 必须改为 true
+deployment_mode = "loopback_legacy" # Alpha 推荐另配 ssh_first；LAN HTTPS 使用 lan_https
+public_base_url = ""              # LAN HTTPS 示例：https://cluster.example.edu:18443
+# worker_broker_socket = "/tmp/easysbatch-<central-uid>/broker.sock" # 仅 ssh_first
+# ssh_known_hosts = "/home/user/.ssh/known_hosts"  # 可选；始终执行 host key 校验

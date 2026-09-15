@@ -1,0 +1,5 @@
+{% from 'partials/resource_policy_control.html' import resource_control with context %}
+<div class="grid resource-policy-grid">
+  {{ resource_control('memory_mib', '', form, policy_recommendations) }}
+  {{ resource_control('time_limit_seconds', '', form, policy_recommendations) }}
+</div>

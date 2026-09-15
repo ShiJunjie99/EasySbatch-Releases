@@ -1,0 +1,26 @@
+# Illustrative, non-deployable paths. Never infer real server facts from this template.
+metadata:
+  schema_version: 1
+  description: Public example only; replace with manually audited deployment facts
+  source_document: Example audit
+environments:
+  - id: example-gromacs
+    display_name: GROMACS environment (example)
+    type: module
+    version: '2026'
+    environment_profile: {id: example-gromacs, version: '1'}
+    source: {document: Example audit, section: Software, detail: Illustrative configuration only}
+    verification_status: DOCUMENTED
+    verification_scope: Example only; no server verification or batch runtime claim
+software:
+  - id: gromacs-example
+    display_name: GROMACS
+    aliases: [gmx, gmx_mpi]
+    executable: /opt/example/gromacs/bin/gmx_mpi
+    version: '2026'
+    environment_profile: {id: example-gromacs, version: '1'}
+    run_type: installed
+    source: {document: Example audit, section: Software, detail: Illustrative path; not a real installation}
+    verification_status: DOCUMENTED
+    verification_scope: Example only; do not deploy without checking the actual path and load profile
+compilers: []

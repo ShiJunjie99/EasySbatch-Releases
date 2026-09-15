@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% from 'partials/macros.html' import badge %}
+{% block title %}集群资源 · EasySbatch{% endblock %}
+{% macro value(number) %}{{ number if number is not none else '不可用' }}{% endmacro %}
+{% macro gpu_summary(gpus) %}
+{% if gpus is none %}不可用{% elif not gpus %}无配置 GPU{% else %}
+{% for gpu in gpus %}<div>{{ gpu.gpu_type or '未区分型号' }}: {{ value(gpu.allocated) }} / {{ gpu.total }}</div>{% endfor %}
+{% endif %}
+{% endmacro %}
+{% block content %}
+<div class="page-pretitle">资源概览</div>
+<div class="heading"><h1>集群资源</h1><a class="button secondary" href="/cluster">刷新快照</a></div>
+<p class="hint">显示当前可见资源，点击刷新获取最新快照。</p>
+{% if snapshot is none %}
+<section><h2>集群信息暂不可用</h2>
+<p class="error" role="alert">⚠ 暂时无法获取集群资源，请稍后刷新或联系维护者。</p></section>
+{% else %}
+<p class="snapshot-label">{{ snapshot_label(snapshot) }}</p>
+<div class="summary-grid">
+{% for label, count in [('分区数',snapshot.partitions|length),('节点数',snapshot.summary.total_nodes),('运行中',snapshot.queue.total.running_jobs if snapshot.queue else '不可用'),('排队中',snapshot.queue.total.pending_jobs if snapshot.queue else '不可用')] %}
+<div class="card"><div class="card-body"><div class="text-secondary">{{ label }}</div><div class="summary-number">{{ count }}</div></div></div>
+{% endfor %}</div>
+{% if snapshot.warnings %}<details class="warning"><summary>⚠ 部分信息需要核对 · {{ snapshot.warnings|length }} 项</summary>
+<ul>{% for warning in snapshot.warnings %}<li>{{ warning }}</li>{% endfor %}</ul></details>{% endif %}
+<details><summary>资源汇总与统计口径</summary>
+<dl><dt>集群</dt><dd>{{ snapshot.cluster_name or '不可用' }}</dd>
+<dt>采集时间 · UTC</dt><dd>{{ snapshot.captured_at.isoformat() }}</dd>
+<dt>执行账户</dt><dd>{{ snapshot.current_user }}</dd>
+<dt>可见节点数</dt><dd>{{ snapshot.summary.total_nodes }}</dd>
+<dt>空闲 / 已分配 / 部分占用</dt><dd>{{ snapshot.summary.idle_nodes }} / {{ snapshot.summary.allocated_nodes }} / {{ snapshot.summary.mixed_nodes }}</dd>
+<dt>不可用 / 停止分配 / 其他</dt><dd>{{ snapshot.summary.down_nodes }} / {{ snapshot.summary.drain_nodes }} / {{ snapshot.summary.other_nodes }}</dd>
+<dt>CPU 已分配 / 总量</dt><dd>{{ value(snapshot.summary.allocated_cpus) }} / {{ value(snapshot.summary.total_cpus) }}</dd>
+<dt>Slurm 空闲 CPU 数</dt><dd>{{ value(snapshot.summary.idle_cpus) }}</dd>
+<dt>运行中 / 排队中作业</dt><dd>{% if snapshot.queue %}{{ snapshot.queue.total.running_jobs }} / {{ snapshot.queue.total.pending_jobs }}{% else %}不可用{% endif %}</dd>
+</dl>
+<p class="hint">这些批量查询发生于一个短时间窗口，并非控制器的原子快照。节点按名称去重；分区可能共享节点，不能把分区资源相加作为集群总量。</p>
+</details>
+<section><h2>分区概览</h2>
+<div class="table-wrap"><table class="table table-vcenter">
+<thead><tr><th>分区</th><th>状态</th><th>节点</th><th>CPU 已分配 / 总量 / 空闲</th><th>GPU 已分配 / 总量</th><th>运行中 / 排队中</th><th>最长 / 默认时限</th></tr></thead>
+<tbody>{% for partition in snapshot.partitions %}<tr>
+<td>{{ partition.name }}{% if partition.is_default %} <span class="badge">默认</span>{% endif %}</td>
+<td>{{ badge(partition.raw_state) }}</td><td>{{ partition.summary.total_nodes if partition.summary else '不可用' }}</td>
+<td>{% if partition.summary %}{{ value(partition.summary.allocated_cpus) }} / {{ value(partition.summary.total_cpus) }} / {{ value(partition.summary.idle_cpus) }}{% else %}不可用{% endif %}</td>
+<td>{{ gpu_summary(partition.summary.gpus if partition.summary else none) }}</td>
+<td>{% if partition.queue %}{{ partition.queue.running_jobs }} / {{ partition.queue.pending_jobs }}{% else %}不可用{% endif %}</td>
+<td>{{ partition.max_time or '不可用' }} / {{ partition.default_time or '未配置或不可用' }}</td>
+</tr>{% else %}<tr><td colspan="7">没有可见分区。</td></tr>{% endfor %}</tbody>
+</table></div>
+<details><summary>分区访问配置 · 不代表当前账户已通过提交校验</summary>
+{% for partition in snapshot.partitions %}<p><strong>{{ partition.name }}</strong><br>
+允许账户： {{ partition.allow_accounts if partition.allow_accounts is not none else '不可用/未显式返回' }} · 禁止账户： {{ partition.deny_accounts if partition.deny_accounts is not none else '不可用/未显式返回' }}<br>
+允许 QOS： {{ partition.allow_qos if partition.allow_qos is not none else '不可用/未显式返回' }} · 禁止 QOS： {{ partition.deny_qos if partition.deny_qos is not none else '不可用/未显式返回' }} · 分区 QOS： {{ partition.qos or '未显式返回' }}</p>{% endfor %}
+</details></section>
+<section><h2>节点</h2>
+<div class="table-wrap"><table class="table table-vcenter">
+<thead><tr><th>节点</th><th>状态</th><th>分区</th><th>CPU 已分配 / 总量 / 空闲</th><th>GPU 已分配 / 总量</th><th>内存 MiB<br>已分配 / 配置值</th><th>原因</th></tr></thead>
+<tbody>{% for node in snapshot.nodes %}<tr>
+<td>{{ node.name }}</td><td>{{ badge(node.raw_state) }}</td><td>{{ node.partitions|join(', ') }}</td>
+<td>{{ value(node.cpus_allocated) }} / {{ value(node.cpus_total) }} / {{ value(node.cpus_idle) }}</td>
+<td>{{ gpu_summary(node.gpus) }}<details><summary>GPU 原始配置</summary><p>{{ node.raw_gres or '未返回' }}</p><p>已使用： {{ node.raw_gres_used or '未返回' }}</p></details></td>
+<td>{{ value(node.memory_allocated_mib) }} / {{ value(node.memory_total_mib) }}</td><td><span title="{{ node.reason or '' }}">{{ queue_reason_label(node.reason) }}</span></td>
+</tr>{% else %}<tr><td colspan="7">没有可见节点。</td></tr>{% endfor %}</tbody>
+</table></div>
+<p class="hint">内存显示 Slurm 配置值与作业分配值，不使用 OS free memory，不表示可申请额度。节点列表用于观察，实际分配由 Slurm 调度。</p>
+</section>
+<section><h2>作业队列</h2>
+{% if snapshot.queue %}
+<div class="table-wrap"><table class="table table-vcenter">
+<thead><tr><th>统计范围</th><th>运行中</th><th>排队中</th><th>其他状态</th></tr></thead>
+<tbody><tr><td>全部可见作业</td><td>{{ snapshot.queue.total.running_jobs }}</td><td>{{ snapshot.queue.total.pending_jobs }}</td><td>{{ snapshot.queue.total.other_jobs }}</td></tr>
+<tr><td>我的作业 · {{ snapshot.current_user }}</td><td>{{ snapshot.queue.current_user.running_jobs }}</td><td>{{ snapshot.queue.current_user.pending_jobs }}</td><td>{{ snapshot.queue.current_user.other_jobs }}</td></tr>
+{% for item in snapshot.queue.partitions %}<tr><td>分区 · {{ item.partition }}</td><td>{{ item.counts.running_jobs }}</td><td>{{ item.counts.pending_jobs }}</td><td>{{ item.counts.other_jobs }}</td></tr>{% endfor %}</tbody>
+</table></div>
+<h3>排队原因</h3>
+<ul>{% for item in snapshot.queue.pending_reasons %}<li><span title="{{ item.reason }}">{{ queue_reason_label(item.reason) }}</span>： {{ item.count }}</li>{% else %}<li>当前可见队列中没有 排队作业。</li>{% endfor %}</ul>
+<p class="hint">按可见作业记录计数；数组元素和异构组件分别计数。跨分区候选作业会计入各候选分区，分区计数可能重叠。只显示聚合，不展示其他用户的作业明细。</p>
+{% else %}<p class="warning">队列查询不可用，不能据此判断当前排队数量为 0。</p>{% endif %}
+</section>
+{% endif %}
+{% endblock %}

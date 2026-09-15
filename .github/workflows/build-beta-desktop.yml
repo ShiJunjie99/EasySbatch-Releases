@@ -1,0 +1,85 @@
+name: build-beta-desktop
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "beta-desktop/**"
+      - "codex/beta-easysbatch"
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "26"
+  PNPM_VERSION: "11.7.0"
+  PYINSTALLER_VERSION: "6.16.0"
+
+jobs:
+  tests:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install Python dependencies
+        run: python -m pip install ".[test,web]"
+      - name: Run Python tests
+        run: python -m pytest -q
+      - name: Verify pinned DSH preparation
+        run: python scripts/prepare_beta_desktop.py
+
+  windows-x64:
+    needs: tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - name: Install build dependencies
+        run: python -m pip install ".[test]" "pyinstaller==${{ env.PYINSTALLER_VERSION }}"
+      - name: Build unsigned Windows test installer
+        run: python scripts/build_beta_desktop.py --target win-x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Beta-EasySbatch-Windows-x64-unsigned
+          path: dist/beta-easysbatch/win-x64/*
+          if-no-files-found: error
+
+  macos-arm64:
+    needs: tests
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - name: Require Apple Silicon runner
+        run: test "$(uname -m)" = arm64
+      - name: Install build dependencies
+        run: python -m pip install ".[test]" "pyinstaller==${PYINSTALLER_VERSION}"
+      - name: Build unsigned Apple Silicon test application
+        run: python scripts/build_beta_desktop.py --target mac-arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Beta-EasySbatch-macOS-arm64-unsigned
+          path: dist/beta-easysbatch/mac-arm64/*
+          if-no-files-found: error

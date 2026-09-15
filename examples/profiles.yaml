@@ -1,0 +1,30 @@
+# Static, illustrative definitions for offline rendering, NOT cluster validation.
+# In actual use the caller supplies profiles verified for the selected environment.
+environments:
+  - id: example-python
+    version: "1"
+    load_steps:
+      - executable: source
+        args: [/opt/example/conda/etc/profile.d/conda.sh]
+      - executable: conda
+        args: [activate, /opt/example/envs/python]
+  - id: example-gcc-cmake
+    version: "1"
+    load_steps:
+      - executable: source
+        args: [/etc/profile.d/modules.sh]
+      - executable: module
+        args: [load, gcc/12, cmake/3.27]
+  - id: example-gromacs
+    version: "1"
+    load_steps:
+      - executable: source
+        args: [/etc/profile.d/modules.sh]
+      - executable: module
+        args: [load, gromacs/2026.0]
+launchers:
+  - id: example-mpi-two-tasks
+    version: "1"
+    command:
+      executable: mpirun
+      args: [-np, "2"]

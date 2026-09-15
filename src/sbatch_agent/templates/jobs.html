@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% from 'partials/macros.html' import badge %}
+{% block title %}任务记录 · EasySbatch{% endblock %}
+{% block content %}
+<div class="page-pretitle">历史记录</div>
+<div class="heading"><h1>任务记录</h1><a class="btn btn-primary" href="/new">新建任务</a></div>
+<p>按创建时间倒序显示最近 100 条。此页面仅展示已保存的状态。</p>
+{% if message %}<div class="alert alert-info" role="status">{{ message }}</div>{% endif %}
+{% if records %}
+<div class="table-wrap"><table class="table table-vcenter table-hover">
+  <thead><tr><th>任务名称</th><th>创建时间 · UTC</th><th>Slurm 作业编号</th><th>提交状态</th><th>运行状态</th><th>操作</th></tr></thead>
+  <tbody>{% for record in records %}<tr>
+    <td><a href="/jobs/{{ record.id }}">{{ record.name }}</a></td>
+    <td>{{ record.created_at.isoformat() }}</td>
+    <td class="job-id">{{ record.slurm_job_id or '—' }}</td>
+    <td>{{ badge(record.submission_state.value) }}</td>
+    <td>{{ badge(record.normalized_slurm_state.value if record.normalized_slurm_state is not none else '尚未查询') }}</td>
+    <td>{% if record.slurm_job_id and record.submission_state.value == 'SUBMITTED' %}
+      <form method="post" action="/jobs/{{ record.id }}/refresh">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="return_to" value="jobs">
+        <button type="submit" class="btn btn-sm">刷新状态</button>
+      </form>
+    {% else %}—{% endif %}</td>
+  </tr>{% endfor %}</tbody>
+</table></div>
+{% else %}<section><p>暂无任务记录。创建一个任务后，可在这里查看。</p></section>{% endif %}
+{% endblock %}

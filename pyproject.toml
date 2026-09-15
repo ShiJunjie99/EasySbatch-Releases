@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sbatch-agent"
+version = "0.1.0"
+description = "AI-assisted Slurm workflow for HPC users"
+requires-python = ">=3.11"
+dependencies = ["pydantic>=2.7,<3", "keyring>=25,<26", "certifi>=2024", "PyYAML>=6,<7"]
+
+[project.scripts]
+easysbatch-launcher = "sbatch_agent.launcher:main"
+easysbatch-user-worker = "sbatch_agent.user_worker:main"
+beta-easysbatch-core = "sbatch_agent.desktop_sidecar:main"
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10", "PyYAML>=6,<7", "httpx>=0.28,<1"]
+web = [
+    "fastapi>=0.115,<1",
+    "Jinja2>=3.1.6,<4",
+    "uvicorn>=0.34,<1",
+    "itsdangerous>=2.2,<3",
+    "PyYAML>=6,<7",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+sbatch_agent = ["launcher_alpha.toml", "launcher_build.json",
+               "templates/*.html", "templates/partials/*.html", "static/*.css", "static/*.js",
+               "static/vendor/*/*.css", "static/vendor/*/*.js", "static/vendor/*/LICENSE*", "static/vendor/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

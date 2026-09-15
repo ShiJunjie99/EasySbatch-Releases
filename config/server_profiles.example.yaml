@@ -1,0 +1,8 @@
+# Paired with server_catalog.example.yaml. Example load name only.
+environments:
+  - id: example-gromacs
+    version: '1'
+    load_steps:
+      - executable: module
+        args: [load, example-gromacs]
+launchers: []

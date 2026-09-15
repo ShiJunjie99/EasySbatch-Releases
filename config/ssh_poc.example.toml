@@ -1,0 +1,9 @@
+# M10-A only. Maintainer supplied, not browser input; no credential fields.
+# Use an explicitly authorized real account and its independently checked UID.
+[target]
+host = "login.example.org"
+port = 22
+username = "test_user_a"
+expected_uid = 1001
+# Optional: an already verified public host-key file, never a private key.
+# known_hosts = "/path/to/verified/known_hosts"

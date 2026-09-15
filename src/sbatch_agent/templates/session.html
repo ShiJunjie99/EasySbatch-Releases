@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}当前用户 · EasySbatch{% endblock %}
+{% block content %}
+<div class="page-header"><div><h1>当前用户</h1><p class="text-secondary mb-0">已绑定真实集群身份</p></div></div>
+{% if legacy_blocked %}
+<div class="alert alert-warning" role="alert">该功能正在进行多用户适配，当前账号暂不可使用。</div>
+{% endif %}
+{% if notice %}<div class="alert alert-success" role="status">{{ notice }}</div>{% endif %}
+<section class="card identity-card" aria-labelledby="identity-title">
+  <div class="card-body">
+    <div class="identity-heading">
+      <div><div class="text-secondary">当前用户</div><h2 id="identity-title">{{ session_identity.username }}</h2></div>
+      <span class="status-pill status-success"><span aria-hidden="true">●</span> 已连接</span>
+    </div>
+    <dl class="identity-grid">
+      <div><dt>集群身份</dt><dd>{{ session_identity.username }}</dd></div>
+      <div><dt>UID</dt><dd class="font-monospace">{{ session_identity.uid }}</dd></div>
+      <div><dt>HOME</dt><dd class="font-monospace">{{ session_identity.home }}</dd></div>
+      <div><dt>服务器</dt><dd class="font-monospace">{{ session_identity.hostname }}</dd></div>
+      <div><dt>集群连接</dt><dd><span class="status-text"><span aria-hidden="true">●</span> 已连接</span></dd></div>
+      <div><dt>AI 服务</dt><dd><span class="status-text"><span aria-hidden="true">{{ '●' if ai_status.state == 'available' else '○' }}</span> {% if ai_transport_mode == 'local_user_provider' %}{{ 'DeepSeek 已配置（可用）' if ai_status.state == 'available' else '尚未配置' if ai_status.state == 'not_configured' else '当前不可用' }}{% else %}{{ '可用' if ai_status.state == 'available' else '当前不可用' }}{% endif %}</span></dd></div>
+    </dl>
+    <div class="identity-actions">
+      <form method="post" action="/session/verify">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn btn-primary" data-loading-label="正在验证…"><span class="spinner-border spinner-border-sm me-2" data-loading-spinner hidden aria-hidden="true"></span><span data-loading-text>验证身份</span></button>
+      </form>
+      <form method="post" action="/logout">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn btn-outline-secondary">退出登录</button>
+      </form>
+    </div>
+  </div>
+</section>
+{% if ai_transport_mode == 'local_user_provider' and ai_status.state == 'not_configured' %}
+<p class="hint mt-3">请在 EasySbatch Launcher 中配置 AI（easysbatch-launcher ai configure）。API Key 仅保存在这台电脑的系统凭据管理器中。</p>
+{% endif %}
+{% if session_identity.username != process_identity %}
+<p class="hint mt-3">任务与文件功能正在进行多用户适配。</p>
+{% endif %}
+{% endblock %}

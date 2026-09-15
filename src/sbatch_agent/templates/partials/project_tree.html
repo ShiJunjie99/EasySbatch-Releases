@@ -1,0 +1,20 @@
+{% macro node(item) %}
+<li data-tree-node="{{ item.relative_path }}">
+{% if item.is_directory %}
+  <details data-tree-dir data-relevant="{{ 'true' if item.is_relevant else 'false' }}"{% if item.expanded %} open{% endif %}>
+    <summary><span class="tree-directory">{{ item.name }}/</span> <small>{{ item.file_count }} 个已观察文件{% if item.is_skipped %} · 未扫描内容{% endif %}</small>{% for tag in item.tags %} <span class="badge bg-secondary-lt">{{ file_tag_label(tag) }}</span>{% endfor %}</summary>
+    {% if item.children %}<ul>{{ children(item.children) }}</ul>{% endif %}
+    {% if item.omitted_files %}<p class="tree-omitted text-secondary">另有 {{ item.omitted_files }} 个已观察文件未展示</p>{% endif %}
+  </details>
+{% else %}
+  <div class="tree-file"><span>{{ item.name }}</span>{% for tag in item.tags %}<span class="badge bg-{{ 'secondary' if tag == 'Skipped' else 'primary' }}-lt">{{ file_tag_label(tag) }}</span>{% endfor %}</div>
+{% endif %}
+</li>
+{% endmacro %}
+{% macro children(items) %}{% for item in items %}{{ node(item) }}{% endfor %}{% endmacro %}
+<div class="project-tree" data-file-tree>
+  <div class="heading"><h3>项目文件</h3><div class="tree-actions"><button type="button" class="btn btn-sm" data-tree-action="relevant">展开相关目录</button><button type="button" class="btn btn-sm" data-tree-action="collapse">全部折叠</button></div></div>
+  {% if tree_show_root|default(true) %}<p class="project-root"><code>{{ project_evidence.project_dir }}</code></p>{% endif %}
+  <ul class="tree-root">{{ node(file_tree.root) }}</ul>
+  <small class="text-secondary">扫描结果 · 相对路径 · 展示 {{ file_tree.rendered_nodes }} 项{% if file_tree.omitted_files %} · {{ file_tree.omitted_files }} 个文件未展示{% endif %}；跳过的目录未统计文件数。</small>
+</div>

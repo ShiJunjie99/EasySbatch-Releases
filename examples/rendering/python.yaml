@@ -1,0 +1,22 @@
+# Complete illustrative proposal for OFFLINE rendering, not a verified cluster job.
+project_dir: /shared/python demo
+work_dir: /shared/python demo
+run_type: python
+entrypoint: run.py
+environment_profile: {id: example-python, version: "1"}
+run_step:
+  executable: python
+  args: [run.py, --input, "inputs/case 01.json"]
+resources:
+  partition: example_cpu
+  account: research
+  qos: normal
+  cpus_per_task: 2
+  memory_mib: 2048
+  time_limit_seconds: 1800
+job_name: python-demo
+stdout: /shared/python demo/logs/slurm-%j.out
+stderr: /shared/python demo/logs/slurm-%j.err
+required_inputs: [run.py, "inputs/case 01.json"]
+unresolved: []
+spec_version: 1

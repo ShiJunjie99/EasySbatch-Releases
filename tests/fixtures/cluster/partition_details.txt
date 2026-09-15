@@ -1,0 +1,3 @@
+PartitionName=cpu AllowGroups=ALL AllowAccounts=ALL AllowQos=ALL AllocNodes=ALL Default=YES QoS=N/A DefaultTime=NONE State=UP TotalCPUs=40 TotalNodes=2
+PartitionName=gpu AllowGroups=ALL AllowAccounts=research AllowQos=normal DenyQos=blocked AllocNodes=ALL Default=NO QoS=partition-limit DefaultTime=00:30:00 State=UP TotalCPUs=32 TotalNodes=1
+PartitionName=maintenance AllowGroups=ALL DenyAccounts=blocked AllowQos=ALL Default=NO QoS=N/A State=DOWN TotalCPUs=16 TotalNodes=1

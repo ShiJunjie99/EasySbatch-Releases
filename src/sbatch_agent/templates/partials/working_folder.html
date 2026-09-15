@@ -1,0 +1,8 @@
+<div id="working-folder"{% if selected_folder %} data-folder-confirmed="true"{% endif %}>
+  <span class="form-label">工作目录</span>
+  <input type="hidden" name="folder_path" value="{{ selected_folder.relative_path if selected_folder else '' }}">
+  <div class="action-row">
+    {% if selected_folder %}<span class="chosen-folder">📁 {{ selected_folder.display_path }}</span>{% endif %}
+    <a id="choose-folder" class="button secondary" href="/ui/folders?path={{ (selected_folder.relative_path if selected_folder else '.')|urlencode }}" hx-get="/ui/folders?path={{ (selected_folder.relative_path if selected_folder else '.')|urlencode }}" hx-target="#folder-picker" hx-swap="innerHTML" hx-sync="#folder-picker:queue last">{{ '更换' if selected_folder else '📁 选择文件夹' }}</a>
+  </div>
+</div>

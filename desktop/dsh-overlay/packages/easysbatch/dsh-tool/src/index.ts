@@ -1,0 +1,213 @@
+/** Restricted model tools for the Beta EasySbatch desktop application. */
+
+import { spawn } from 'node:child_process'
+import { isAbsolute } from 'node:path'
+import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-agent'
+import { defineTool } from '@deepseek-ai/dsh-tools'
+import { snapshotJsonValue, type JsonValue } from '@deepseek-ai/dsh-util-values'
+
+export const name = 'beta-easysbatch-tool'
+export const inject = ['tools']
+
+const PROTOCOL_VERSION = 1
+const MAX_OUTPUT_BYTES = 1024 * 1024
+const TIMEOUT_MS = 30_000
+let requestSequence = 0
+
+interface CoreResponse {
+  readonly protocol_version: number
+  readonly id: number
+  readonly result?: unknown
+  readonly error?: {
+    readonly code?: unknown
+    readonly message?: unknown
+  }
+}
+
+function coreLaunch(): { command: string; args: string[] } {
+  const command = process.env.BETA_EASYSBATCH_CORE_BINARY
+  if (command === undefined || command === '' || !isAbsolute(command)) {
+    throw new Error('Beta EasySbatch core is not configured with an absolute executable path')
+  }
+  const encodedArgs = process.env.BETA_EASYSBATCH_CORE_ARGS_JSON
+  if (encodedArgs === undefined || encodedArgs === '') return { command, args: [] }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(encodedArgs)
+  } catch {
+    throw new Error('Beta EasySbatch core arguments are invalid')
+  }
+  if (!Array.isArray(parsed) || parsed.some(value => typeof value !== 'string')) {
+    throw new Error('Beta EasySbatch core arguments must be a JSON string array')
+  }
+  return { command, args: parsed }
+}
+
+function coreEnvironment(): NodeJS.ProcessEnv {
+  const allowed = new Set([
+    'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'PATH', 'PATHEXT', 'SYSTEMROOT',
+    'TEMP', 'TMP', 'TMPDIR', 'USERPROFILE', 'WINDIR',
+  ])
+  return Object.fromEntries(Object.entries(process.env).filter(([key]) => allowed.has(key.toUpperCase())))
+}
+
+function callCore(method: string, params: Record<string, unknown>, signal: AbortSignal): Promise<JsonValue> {
+  const { command, args } = coreLaunch()
+  const id = ++requestSequence
+  const request = `${JSON.stringify({ protocol_version: PROTOCOL_VERSION, id, method, params })}\n`
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      env: coreEnvironment(),
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    })
+    const stdout: Buffer[] = []
+    let stdoutBytes = 0
+    let stderrBytes = 0
+    let settled = false
+    const finish = (callback: () => void): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      signal.removeEventListener('abort', abort)
+      callback()
+    }
+    const abort = (): void => {
+      child.kill()
+      finish(() => { reject(new Error('Beta EasySbatch core call was cancelled')) })
+    }
+    const timer = setTimeout(() => {
+      child.kill()
+      finish(() => { reject(new Error('Beta EasySbatch core call timed out')) })
+    }, TIMEOUT_MS)
+    timer.unref()
+    if (signal.aborted) {
+      abort()
+      return
+    }
+    signal.addEventListener('abort', abort, { once: true })
+    child.once('error', (error) => {
+      finish(() => { reject(new Error(`Beta EasySbatch core could not start: ${error.message}`)) })
+    })
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdoutBytes += chunk.length
+      if (stdoutBytes > MAX_OUTPUT_BYTES) {
+        child.kill()
+        finish(() => { reject(new Error('Beta EasySbatch core response exceeded the size limit')) })
+        return
+      }
+      stdout.push(chunk)
+    })
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderrBytes += chunk.length
+      if (stderrBytes > 64 * 1024) child.kill()
+    })
+    child.once('close', (code) => {
+      finish(() => {
+        if (code !== 0) {
+          reject(new Error(`Beta EasySbatch core exited with status ${String(code)}`))
+          return
+        }
+        const text = Buffer.concat(stdout).toString('utf8')
+        const lines = text.split('\n').filter(line => line !== '')
+        if (lines.length !== 1) {
+          reject(new Error('Beta EasySbatch core returned an invalid framed response'))
+          return
+        }
+        let response: CoreResponse
+        try {
+          response = JSON.parse(lines[0]!) as CoreResponse
+        } catch {
+          reject(new Error('Beta EasySbatch core returned invalid JSON'))
+          return
+        }
+        if (response.protocol_version !== PROTOCOL_VERSION || response.id !== id) {
+          reject(new Error('Beta EasySbatch core returned a mismatched response'))
+          return
+        }
+        if (response.error !== undefined) {
+          const codeValue = typeof response.error.code === 'string' ? response.error.code : 'CORE_ERROR'
+          const message = typeof response.error.message === 'string' ? response.error.message : 'Core operation failed'
+          reject(new Error(`${codeValue}: ${message}`))
+          return
+        }
+        const result = snapshotJsonValue(response.result) as JsonValue | undefined
+        if (result === undefined) {
+          reject(new Error('Beta EasySbatch core returned no lossless JSON result'))
+          return
+        }
+        resolve(result)
+      })
+    })
+    child.stdin.once('error', () => undefined)
+    child.stdin.end(request)
+  })
+}
+
+const JSON_OUTPUT = {
+  schema: { type: 'json' as const },
+  render: (_args: unknown, value: unknown) => [{ type: 'text' as const, text: JSON.stringify(value) }],
+}
+
+export function apply(ctx: Context): void {
+  ctx.tools.register(defineTool({
+    name: 'easysbatch_capabilities',
+    description: 'Report the installed Beta EasySbatch core capabilities and whether job submission is enabled.',
+    parameters: {},
+    output: JSON_OUTPUT,
+    async execute(_args, exec) {
+      return await callCore('health', {}, exec.signal)
+    },
+  }))
+  ctx.tools.register(defineTool({
+    name: 'easysbatch_scan_project',
+    description: 'Read-only, bounded scan of this session\'s selected local workspace. The path cannot be supplied by the model.',
+    parameters: {},
+    output: JSON_OUTPUT,
+    async execute(_args, exec) {
+      const projectDir = exec.agent?.session.header.cwd
+      if (projectDir === undefined) throw new Error('This session has no selected workspace')
+      return await callCore('scan_project', { project_dir: projectDir }, exec.signal)
+    },
+  }))
+  ctx.tools.register(defineTool({
+    name: 'easysbatch_validate_job',
+    description: 'Validate one strict, structured EasySbatch JobSpec. This does not render, execute, or submit anything.',
+    parameters: {
+      job_spec: {
+        type: 'object',
+        required: true,
+        additionalProperties: true,
+        description: 'Complete JobSpec object using absolute POSIX paths for the target cluster.',
+      },
+    },
+    output: JSON_OUTPUT,
+    async execute(args, exec) {
+      return await callCore('validate_job', { job_spec: args.job_spec }, exec.signal)
+    },
+  }))
+  ctx.tools.register(defineTool({
+    name: 'easysbatch_render_job',
+    description: 'Validate and deterministically render one JobSpec into a Bash/sbatch preview using the administrator-supplied profile file. This never executes or submits the script.',
+    parameters: {
+      job_spec: {
+        type: 'object',
+        required: true,
+        additionalProperties: true,
+        description: 'Complete JobSpec object using absolute POSIX paths for the target cluster.',
+      },
+    },
+    output: JSON_OUTPUT,
+    async execute(args, exec) {
+      const profilesPath = process.env.BETA_EASYSBATCH_PROFILES_PATH
+      if (profilesPath === undefined || profilesPath === '' || !isAbsolute(profilesPath)) {
+        throw new Error('No absolute BETA_EASYSBATCH_PROFILES_PATH is configured; validation remains available')
+      }
+      return await callCore('render_job', {
+        job_spec: args.job_spec,
+        profiles_path: profilesPath,
+      }, exec.signal)
+    },
+  }))
+}

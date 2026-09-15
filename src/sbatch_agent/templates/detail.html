@@ -1,0 +1,44 @@
+{% extends 'base.html' %}
+{% block title %}{{ record.name }} · EasySbatch{% endblock %}
+{% block content %}
+<div class="page-pretitle"><a href="/jobs">← 任务记录</a> / 任务详情</div>
+<h1>{{ record.name }}</h1>
+<div id="job-status" aria-live="polite">{% include 'partials/job_status.html' %}</div>
+{% set spec = record.job_spec %}
+<section><h2>任务配置</h2><dl>
+<dt>运行方式</dt><dd>{{ run_type_label(spec.run_type) }}</dd><dt>入口程序</dt><dd><code>{{ spec.entrypoint }}</code></dd>
+<dt>执行程序</dt><dd><code title="{{ spec.run_step.executable }}">{{ compact_executable(spec.run_step.executable) }}</code></dd>
+<dt>程序参数</dt><dd><code>{{ format_args(spec.run_step.args) or '—' }}</code></dd>
+<dt>输入文件</dt><dd><code>{{ spec.required_inputs|tojson }}</code></dd>
+<dt>工作目录</dt><dd><code>{{ spec.work_dir }}</code></dd>
+<dt>运行环境</dt><dd>{{ spec.environment_profile.id }} / {{ spec.environment_profile.version }}</dd>
+</dl></section>
+<section><h2>计算资源</h2><dl>
+<dt>分区</dt><dd>{{ spec.resources.partition }}</dd>
+<dt>节点数 / 进程数 / 每进程 CPU 数</dt><dd>{{ spec.resources.nodes }} / {{ spec.resources.ntasks }} / {{ spec.resources.cpus_per_task }}</dd>
+<dt>每节点 GPU 数</dt><dd>{{ spec.resources.gpus.count if spec.resources.gpus else 0 }}</dd>
+{% for label, key, policy in [('内存', 'memory_mib', spec.resources.memory_policy), ('运行时限', 'time_limit_seconds', spec.resources.walltime_policy)] %}
+<dt>{{ label }}</dt><dd>
+{% if policy.mode == 'cluster_default' %}集群默认{% else %}{{ spec.resources.memory_mib ~ ' MiB' if key == 'memory_mib' else format_duration(spec.resources.time_limit_seconds) }} · {{ '智能推荐' if policy.mode == 'recommended' else '用户指定' }}{% endif %}
+{% if policy.evidence %}<details class="field-evidence"><summary>查看依据</summary><small>{{ policy.evidence.source }}</small><p>{{ policy.evidence.reason }}</p><small>有明确依据</small></details>{% endif %}
+</dd>{% endfor %}
+</dl></section>
+<section><h2>运行脚本</h2><details id="actual-script"><summary>查看已保存脚本</summary>
+<p>创建时保存在数据库中的完整脚本。</p><pre id="script-snapshot">{{ record.rendered_script }}</pre></details></section>
+{% if record.submission_state.value == 'SCRIPT_RENDERED' %}
+<p>请检查脚本、运行环境、工作目录、输入文件及日志父目录。以 <strong>{{ identity }}</strong> 身份执行。</p>
+<form method="post" action="/jobs/{{ record.id }}/submit">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<div class="submit-bar"><button type="submit" class="btn btn-primary submit-job">确认并提交</button><strong>此操作将提交真实 Slurm 作业。</strong></div>
+</form>{% endif %}
+<section><h2>日志</h2><dl>
+<dt>标准输出路径</dt><dd>{% if record.stdout_path is not none %}<code>{{ record.stdout_path }}</code>{% else %}未显式设置（Slurm 默认）{% endif %}</dd>
+<dt>错误输出路径</dt><dd>{% if record.stderr_path is not none %}<code>{{ record.stderr_path }}</code>{% else %}未显式设置（Slurm 默认）{% endif %}</dd>
+</dl><p class="hint">日志路径保留原始声明，%j 对应 Slurm 作业编号；页面不读取日志内容。</p></section>
+<details><summary>记录详情</summary><dl>
+<dt>内部记录编号</dt><dd>{{ record.id }}</dd>
+<dt>创建时间 · UTC</dt><dd>{{ record.created_at.isoformat() }}</dd>
+<dt>更新时间 · UTC</dt><dd>{{ record.updated_at.isoformat() }}</dd>
+<dt>脚本路径</dt><dd>{{ record.script_path or '未记录' }}</dd>
+</dl><h3>任务配置快照（JobSpec）</h3><pre id="spec-snapshot">{{ record.job_spec_snapshot }}</pre></details>
+{% endblock %}

@@ -1,0 +1,43 @@
+.venv/
+.agents/
+.codex/
+.env
+.env.*
+!.env.example
+__pycache__/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+.sbatch-agent/
+# Real server catalogs / loading profiles are private deployment configuration.
+/config/server_catalog.yaml
+/config/server-profiles.yaml
+/config/m8-server-profiles.yaml
+/config/m7-server-profiles.yaml
+# Local integration evidence and personal scientific test input.
+/docs/m6-c/
+/sjjmanualtest/
+
+# Private deployment, local state and integration evidence are never released.
+/deployment-private/
+/config/private/
+/config/*.private.*
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite3-journal
+runs/
+logs/
+browser-profiles/
+*.session
+*.pid
+*.sock
+*.key
+*.pem
+*.p12
+*.pfx
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/

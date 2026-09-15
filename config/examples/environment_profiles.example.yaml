@@ -1,0 +1,9 @@
+# Synthetic public environment profiles.  Real module names, paths and
+# private Conda/venv locations belong in deployment-private configuration.
+environments:
+  - id: example-python
+    version: '1'
+    load_steps:
+      - executable: module
+        args: [load, python/3.11]
+launchers: []

@@ -1,0 +1,13 @@
+# Public Alpha deployment metadata. This file contains no credential.
+[target]
+name = "example-cluster"
+host = "cluster.example.edu"
+port = 22
+remote_web_port = 8000
+broker_socket = "/tmp/easysbatch-1000/broker.sock"
+worker_entrypoint = "/tmp/easysbatch-1000/user-worker-v2.py"
+
+[launcher]
+connect_timeout_seconds = 12
+ready_timeout_seconds = 60
+handoff_timeout_seconds = 30

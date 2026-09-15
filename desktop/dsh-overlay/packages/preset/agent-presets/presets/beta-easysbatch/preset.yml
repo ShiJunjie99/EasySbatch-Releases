@@ -1,0 +1,3 @@
+name: Beta EasySbatch
+description: 只提供受限项目扫描、JobSpec 校验和 sbatch 脚本预览；不提供 Shell 或自动提交。
+order: 1

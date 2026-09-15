@@ -1,0 +1,17 @@
+# Beta EasySbatch deliberately removes all general-purpose model tools. The
+# only preset shipped by the prepared source mounts the restricted sidecar
+# adapter; no shell, filesystem mutation, Web, skill, goal, workflow, todo, or
+# subagent tool is exposed.
+
+- id: session-telemetry-otel
+  disabled: true
+
+- id: ui-agent-preset
+  disabled: true
+
+- id: agent-presets
+  config:
+    default: beta-easysbatch
+    roots: []
+    includeShippedRoot: true
+    includeUserRoot: false
