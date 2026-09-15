@@ -1,0 +1,9 @@
+{
+  "profile": {
+    "id": "primary",
+    "display_name": "Example HPC cluster",
+    "host": "cluster.example.edu",
+    "ssh_port": 22
+  },
+  "username": "student"
+}

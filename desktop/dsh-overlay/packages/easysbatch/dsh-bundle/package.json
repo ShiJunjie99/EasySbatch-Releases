@@ -26,6 +26,7 @@
     }
   },
   "dependencies": {
+    "@deepseek-ai/dsh-easysbatch-product": "workspace:^",
     "@beta-easysbatch/dsh-tool": "workspace:^"
   },
   "peerDependencies": {

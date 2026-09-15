@@ -1,7 +1,7 @@
 /** Restricted model tools for the Beta EasySbatch desktop application. */
 
 import { spawn } from 'node:child_process'
-import { isAbsolute } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-agent'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -12,7 +12,7 @@ export const inject = ['tools']
 
 const PROTOCOL_VERSION = 1
 const MAX_OUTPUT_BYTES = 1024 * 1024
-const TIMEOUT_MS = 30_000
+const TIMEOUT_MS = 75_000
 let requestSequence = 0
 
 interface CoreResponse {
@@ -46,13 +46,13 @@ function coreLaunch(): { command: string; args: string[] } {
 
 function coreEnvironment(): NodeJS.ProcessEnv {
   const allowed = new Set([
-    'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'PATH', 'PATHEXT', 'SYSTEMROOT',
-    'TEMP', 'TMP', 'TMPDIR', 'USERPROFILE', 'WINDIR',
+    'COMSPEC', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'PATH', 'PATHEXT',
+    'SSH_AUTH_SOCK', 'SYSTEMROOT', 'TEMP', 'TMP', 'TMPDIR', 'USERPROFILE', 'WINDIR',
   ])
   return Object.fromEntries(Object.entries(process.env).filter(([key]) => allowed.has(key.toUpperCase())))
 }
 
-function callCore(method: string, params: Record<string, unknown>, signal: AbortSignal): Promise<JsonValue> {
+export function callCore(method: string, params: Record<string, unknown>, signal: AbortSignal): Promise<JsonValue> {
   const { command, args } = coreLaunch()
   const id = ++requestSequence
   const request = `${JSON.stringify({ protocol_version: PROTOCOL_VERSION, id, method, params })}\n`
@@ -145,6 +145,26 @@ function callCore(method: string, params: Record<string, unknown>, signal: Abort
   })
 }
 
+export interface ProductPaths {
+  readonly profilesPath: string
+  readonly clusterConfigPath: string
+  readonly databasePath: string
+  readonly submissionRoot: string
+}
+
+export function productPaths(): ProductPaths {
+  const productHome = process.env.DSH_HOME
+  if (productHome === undefined || productHome === '' || !isAbsolute(productHome)) {
+    throw new Error('Beta EasySbatch product home is not configured')
+  }
+  return {
+    profilesPath: process.env.BETA_EASYSBATCH_PROFILES_PATH ?? join(productHome, 'profiles.yaml'),
+    clusterConfigPath: process.env.BETA_EASYSBATCH_CLUSTER_CONFIG_PATH ?? join(productHome, 'cluster.json'),
+    databasePath: join(productHome, 'jobs.sqlite3'),
+    submissionRoot: join(productHome, 'runs'),
+  }
+}
+
 const JSON_OUTPUT = {
   schema: { type: 'json' as const },
   render: (_args: unknown, value: unknown) => [{ type: 'text' as const, text: JSON.stringify(value) }],
@@ -158,6 +178,74 @@ export function apply(ctx: Context): void {
     output: JSON_OUTPUT,
     async execute(_args, exec) {
       return await callCore('health', {}, exec.signal)
+    },
+  }))
+  ctx.tools.register(defineTool({
+    name: 'easysbatch_cluster_summary',
+    description: 'Read a fresh aggregate Slurm snapshot through the configured system-OpenSSH connection. This is read-only and never returns another user\'s job list.',
+    parameters: {},
+    output: JSON_OUTPUT,
+    async execute(_args, exec) {
+      const paths = productPaths()
+      return await callCore('cluster_snapshot', {
+        cluster_config_path: paths.clusterConfigPath,
+      }, exec.signal)
+    },
+  }))
+  ctx.tools.register(defineTool({
+    name: 'easysbatch_recommend_job',
+    description: 'Recommend an eligible Slurm partition and registered resource shape from a fresh cluster snapshot. It never chooses a physical node, predicts wait time, or submits the job.',
+    parameters: {
+      job_spec: {
+        type: 'object',
+        required: true,
+        additionalProperties: true,
+        description: 'Complete JobSpec whose explicit minimum resource requirements must be preserved.',
+      },
+      preference: {
+        type: 'string',
+        enum: ['FASTEST_AVAILABLE', 'BALANCED', 'RESOURCE_EFFICIENT'],
+        default: 'BALANCED',
+        description: 'Ranking preference; BALANCED is the default.',
+      },
+    },
+    output: JSON_OUTPUT,
+    async execute(args, exec) {
+      const paths = productPaths()
+      return await callCore('recommend_job', {
+        job_spec: args.job_spec,
+        profiles_path: paths.profilesPath,
+        cluster_config_path: paths.clusterConfigPath,
+        preference: args.preference ?? 'BALANCED',
+      }, exec.signal)
+    },
+  }))
+  ctx.tools.register(defineTool({
+    name: 'easysbatch_prepare_job',
+    description: 'Validate, render, and save one immutable local task draft for explicit user review in Task history. This never contacts Slurm or submits a job.',
+    parameters: {
+      job_spec: {
+        type: 'object',
+        required: true,
+        additionalProperties: true,
+        description: 'Complete resolved JobSpec using absolute POSIX paths on the target cluster.',
+      },
+      name: {
+        type: 'string',
+        required: false,
+        description: 'Optional user-facing task name.',
+      },
+    },
+    output: JSON_OUTPUT,
+    async execute(args, exec) {
+      const paths = productPaths()
+      return await callCore('create_job', {
+        job_spec: args.job_spec,
+        name: args.name ?? null,
+        profiles_path: paths.profilesPath,
+        database_path: paths.databasePath,
+        submission_root: paths.submissionRoot,
+      }, exec.signal)
     },
   }))
   ctx.tools.register(defineTool({
@@ -200,10 +288,7 @@ export function apply(ctx: Context): void {
     },
     output: JSON_OUTPUT,
     async execute(args, exec) {
-      const profilesPath = process.env.BETA_EASYSBATCH_PROFILES_PATH
-      if (profilesPath === undefined || profilesPath === '' || !isAbsolute(profilesPath)) {
-        throw new Error('No absolute BETA_EASYSBATCH_PROFILES_PATH is configured; validation remains available')
-      }
+      const profilesPath = productPaths().profilesPath
       return await callCore('render_job', {
         job_spec: args.job_spec,
         profiles_path: profilesPath,

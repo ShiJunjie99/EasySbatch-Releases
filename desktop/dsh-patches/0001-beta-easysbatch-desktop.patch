@@ -168,12 +168,13 @@ diff --git a/apps/desktop/scripts/package-target.ts b/apps/desktop/scripts/packa
 index 6485515..08c82bd 100644
 --- a/apps/desktop/scripts/package-target.ts
 +++ b/apps/desktop/scripts/package-target.ts
-@@ -256,6 +256,18 @@ async function main(): Promise<void> {
+@@ -256,6 +256,19 @@ async function main(): Promise<void> {
    }
    await runPnpm(['run', 'build:official'], buildEnv, REPOSITORY_ROOT)
    await runPnpm(['run', 'release:pack', '--family', 'dsh', '--out', buildPaths.packedDsh], buildEnv, REPOSITORY_ROOT)
 +  for (const packageDirectory of [
 +    'packages/easysbatch/dsh-tool',
++    'packages/easysbatch/dsh-product',
 +    'packages/easysbatch/dsh-bundle',
 +  ]) {
 +    await runPnpm([
@@ -338,16 +339,29 @@ index 9ac6dd7..2049b48 100644
 +    Beta EasySbatch
 +  </div>
  }
+diff --git a/tsconfig.client.json b/tsconfig.client.json
+index 71ea2f0..ea8be92 100644
+--- a/tsconfig.client.json
++++ b/tsconfig.client.json
+@@ -77,6 +77,7 @@
+     { "path": "./packages/api/workspace-files/tsconfig.client.json" },
+     { "path": "./packages/client/web" },
+     { "path": "./packages/context/file-reference" },
++    { "path": "./packages/easysbatch/dsh-product/tsconfig.client.json" },
+     { "path": "./apps/web" }
+   ]
+ }
 diff --git a/tsconfig.host.json b/tsconfig.host.json
 index c5a3f11..5bf6b12 100644
 --- a/tsconfig.host.json
 +++ b/tsconfig.host.json
-@@ -154,7 +154,9 @@
+@@ -154,7 +154,10 @@
      { "path": "./packages/util/crypto" },
      { "path": "./packages/util/deque" },
      { "path": "./packages/util/chunked-list" },
      { "path": "./packages/util/values" },
 +    { "path": "./packages/easysbatch/dsh-tool" },
++    { "path": "./packages/easysbatch/dsh-product/tsconfig.host.json" },
 +    { "path": "./packages/easysbatch/dsh-bundle" },
      { "path": "./packages/util/workspace-path" },
      { "path": "./packages/util/output-retention" },
@@ -369,3 +383,346 @@ index 73da078..d52f28d 100644
        macOSSigning = resolveMacOSSigningEnvironment(process.env)
        const signing = await signMacOSSeedStore(
          STORE_ROOT,
+diff --git a/packages/client/ui-brand-official/src/client/index.ts b/packages/client/ui-brand-official/src/client/index.ts
+index 332a5f6..29dd485 100644
+--- a/packages/client/ui-brand-official/src/client/index.ts
++++ b/packages/client/ui-brand-official/src/client/index.ts
+@@ -1,4 +1,4 @@
+-/** Official DeepSeek Harness occupants for the generic browser-brand slots. */
++/** Beta EasySbatch occupants for the generic browser-brand slots. */
+ import type { Context as ClientContext } from '@deepseek-ai/cordis'
+ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+ import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
+@@ -8,9 +8,8 @@ import { OfficialBrandMark, OfficialBrandName } from './Brand.tsx'
+ export const inject = ['slots']
+
+ /**
+- * Fill the sidebar brand slots as one declaration-aware registration set. The
+- * conversation hero stays on its declaring package's animated fish fallback,
+- * so the official build registers nothing there.
++ * Fill the sidebar and empty-workspace hero brand slots as one
++ * declaration-aware registration set.
+  * @param ctx - Client root context.
+  */
+ export function apply(ctx: ClientContext): void {
+@@ -19,5 +18,7 @@ export function apply(ctx: ClientContext): void {
+     ctx.slots.inject('sidebar.brand.name', function* () {
+       yield ctx.slots.register({ name: 'sidebar.brand.mark' }, OfficialBrandMark)
+       yield ctx.slots.register({ name: 'sidebar.brand.name' }, OfficialBrandName)
++      yield ctx.slots.inject('conversation.hero.brand.mark', () =>
++        ctx.slots.register({ name: 'conversation.hero.brand.mark' }, OfficialBrandMark))
+     }))
+ }
+diff --git a/packages/client/ui-conversation/src/client/locales.ts b/packages/client/ui-conversation/src/client/locales.ts
+index 4aeb755..c30301a 100644
+--- a/packages/client/ui-conversation/src/client/locales.ts
++++ b/packages/client/ui-conversation/src/client/locales.ts
+@@ -13,11 +13,11 @@ export const zh = {
+   'hint.goal': '输入目标，智能体将持续执行',
+   'hint.goal.active': '当前目标进行中。可输入 edit 修改 / pause 暂停 / resume 继续 / clear 清除',
+   'placeholder.plan': PLAN_NEXT_ACTION_ZH,
+-  'placeholder.default': '发消息或创建任务, / 调用指令, @ 文件或对话',
++  'placeholder.default': '说明任务、入口文件和资源需求…',
+   'placeholder.unavailable': '会话不可用',
+   'placeholder.parentOffline': '父会话已离线，无法继续发送；仍可停止当前运行',
+-  'placeholder.hero': '描述你想要构建的内容, / 调用指令, @ 文件或对话',
+-  'placeholder.workspace': '选择一个工作区开始',
++  'placeholder.hero': '说明要运行的程序、数据和资源需求…',
++  'placeholder.workspace': '先选择一个项目文件夹',
+   'placeholder.steerQueue': 'Cmd/Ctrl+Enter 插话发送全部排队消息',
+   'input.commands': '指令',
+   'input.stop': '停止生成',
+@@ -76,9 +76,9 @@ export const zh = {
+   'access.confirm.acknowledge': '我已了解风险，并愿意继续',
+   'access.confirm.cancel': '取消',
+   'access.confirm.enable': '启用完全权限',
+-  'hero.headline': '探索未至之境',
+-  'hero.preview': '预览版',
+-  'hero.chooseWorkspace': '选择工作区',
++  'hero.headline': '告诉我你要运行什么',
++  'hero.preview': '桌面 Beta',
++  'hero.chooseWorkspace': '选择项目文件夹',
+   'session.hierarchy': '会话层级',
+   'todo.title': '任务',
+   'todo.progress.done': '{done} 已完成',
+@@ -179,11 +179,11 @@ export const en = {
+   'hint.goal': 'describe the objective for a long-running task',
+   'hint.goal.active': 'goal active — edit / pause / resume / clear',
+   'placeholder.plan': PLAN_NEXT_ACTION_EN,
+-  'placeholder.default': 'Message or run a task, / commands, @ files or sessions',
++  'placeholder.default': 'Describe the task, entry file, and resource requirements…',
+   'placeholder.unavailable': 'Session unavailable',
+   'placeholder.parentOffline': 'Parent session offline; sending is unavailable but you can still stop the run',
+-  'placeholder.hero': 'Describe what you want to build, / commands, @ files or sessions',
+-  'placeholder.workspace': 'Choose a workspace to start',
++  'placeholder.hero': 'Describe the program, data, and resources you need to run…',
++  'placeholder.workspace': 'Choose a project folder first',
+   'placeholder.steerQueue': 'Cmd/Ctrl+Enter steers all queued messages',
+   'input.commands': 'Commands',
+   'input.stop': 'Stop generating',
+@@ -242,9 +242,9 @@ export const en = {
+   'access.confirm.acknowledge': 'I understand the risks and want to continue',
+   'access.confirm.cancel': 'Cancel',
+   'access.confirm.enable': 'Enable Full access',
+-  'hero.headline': 'Into the Unknown',
+-  'hero.preview': 'Preview',
+-  'hero.chooseWorkspace': 'Choose workspace',
++  'hero.headline': 'What do you want to run?',
++  'hero.preview': 'Desktop Beta',
++  'hero.chooseWorkspace': 'Choose project folder',
+   'session.hierarchy': 'Session hierarchy',
+   'todo.title': 'To-dos',
+   'todo.progress.done': '{done} completed',
+diff --git a/packages/client/ui-layout/src/client/AppFrame.module.css b/packages/client/ui-layout/src/client/AppFrame.module.css
+index 5a4f131..80d24a6 100644
+--- a/packages/client/ui-layout/src/client/AppFrame.module.css
++++ b/packages/client/ui-layout/src/client/AppFrame.module.css
+@@ -5,6 +5,7 @@
+   height: 100%;
+   overflow: hidden;
+   background: var(--dsw-alias-bg-base);
++  font-family: Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+   /* Collapse/expand animates the tracks on the deepsuite sider curve
+      (--ds-ease-in-out / --ds-transition-duration-slow, ui-theme base.css). */
+   transition: grid-template-columns var(--ds-transition-duration-slow) var(--ds-ease-in-out);
+@@ -34,6 +35,7 @@
+   display: flex;
+   flex-direction: column;
+   overflow: hidden;
++  background: var(--dsw-alias-bg-layer-1);
+ }
+
+ /* Drag handles are frame children (columns clip overflow): an 8px hit strip
+@@ -56,6 +58,31 @@
+   transition: left var(--ds-transition-duration-slow) var(--ds-ease-in-out);
+ }
+
++/* EasySbatch keeps the project-files split visible instead of hiding the
++   resize affordance. The hit target remains eight pixels wide, while the
++   short blue rail makes it obvious that the files workspace can be resized. */
++.handle[data-side='rightbar']::after {
++  position: absolute;
++  top: 50%;
++  left: 3px;
++  width: 2px;
++  height: 52px;
++  content: '';
++  background: var(--dsw-alias-state-business-primary);
++  border-radius: 999px;
++  opacity: 0.42;
++  transform: translateY(-50%);
++  transition: height 150ms ease, opacity 150ms ease, width 150ms ease;
++}
++
++.handle[data-side='rightbar']:hover::after,
++.handle[data-side='rightbar'][data-dragging]::after {
++  left: 2px;
++  width: 4px;
++  height: 84px;
++  opacity: 0.95;
++}
++
+ .frame[data-dragging] .handle {
+   transition: none;
+ }
+diff --git a/packages/client/ui-layout/src/client/columns.ts b/packages/client/ui-layout/src/client/columns.ts
+index a58b284..0ecaefc 100644
+--- a/packages/client/ui-layout/src/client/columns.ts
++++ b/packages/client/ui-layout/src/client/columns.ts
+@@ -8,13 +8,13 @@
+ export interface Columns { sidebar: number; center: number; rightbar: number }
+
+ /** Center width protected while the normal right column is open. */
+-export const CENTER_MIN = 400
++export const CENTER_MIN = 360
+ /** Sidebar drag clamp floor. */
+-export const SIDEBAR_MIN = 264
++export const SIDEBAR_MIN = 208
+ /** Sidebar drag clamp ceiling. */
+-export const SIDEBAR_MAX = 420
++export const SIDEBAR_MAX = 320
+ /** Sidebar width before any user drag. */
+-export const SIDEBAR_DEFAULT = 280
++export const SIDEBAR_DEFAULT = 220
+ /** Closed-sidebar rail: a 24px icon column between 16px horizontal paddings. */
+ export const SIDEBAR_COLLAPSED = 56
+ /** Viewport width below which the sidebar auto-collapses to the rail (deepsuite
+@@ -22,11 +22,11 @@ export const SIDEBAR_COLLAPSED = 56
+  * (stores.ts narrowExpanded). */
+ export const SIDEBAR_AUTO_COLLAPSE = 1024
+ /** Right column drag clamp floor. */
+-export const RIGHTBAR_MIN = 300
++export const RIGHTBAR_MIN = 340
+ /** Maximum normal right panel width as a fraction of the frame. */
+ export const RIGHTBAR_MAX_RATIO = 0.7
+ /** First-open right panel preference as a fraction of the frame. */
+-export const RIGHTBAR_DEFAULT_RATIO = 0.45
++export const RIGHTBAR_DEFAULT_RATIO = 0.50
+
+ /**
+  * Clamp a panel width into its contract range.
+diff --git a/packages/client/ui-sidebar-files/src/client/FilesBody.module.css b/packages/client/ui-sidebar-files/src/client/FilesBody.module.css
+index a49f668..775f306 100644
+--- a/packages/client/ui-sidebar-files/src/client/FilesBody.module.css
++++ b/packages/client/ui-sidebar-files/src/client/FilesBody.module.css
+@@ -28,8 +28,9 @@
+   gap: 4px;
+   align-items: center;
+   box-sizing: border-box;
+-  height: 38px;
+-  padding: 0 6px 0 16px;
++  height: 44px;
++  padding: 0 10px 0 16px;
++  background: var(--dsw-alias-bg-layer-1);
+   border-bottom: 0.5px solid var(--dsw-alias-border-l3);
+ }
+
+@@ -75,7 +76,7 @@
+      stands in for the right padding so the rows keep their inset whether or
+      not the tree overflows. */
+   margin-right: 2px;
+-  padding: 8px 0 8px 8px;
++  padding: 12px 4px 12px 10px;
+   overflow: auto;
+   scrollbar-gutter: stable;
+ }
+@@ -110,13 +111,13 @@
+   min-width: 0;
+   /* Rows abut, so the hover fill is the whole row; the tree's air is this
+      inset, not a gap between rows. */
+-  padding: 5px 10px;
++  padding: 6px 10px;
+   color: inherit;
+   font: inherit;
+   text-align: left;
+   background: transparent;
+   border: 0;
+-  border-radius: 10px;
++  border-radius: 7px;
+   cursor: pointer;
+ }
+
+diff --git a/packages/client/ui-sidebar-files/src/client/locales.ts b/packages/client/ui-sidebar-files/src/client/locales.ts
+index b88e6ba..fb28bb8 100644
+--- a/packages/client/ui-sidebar-files/src/client/locales.ts
++++ b/packages/client/ui-sidebar-files/src/client/locales.ts
+@@ -20,9 +20,9 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
+
+ /** Simplified Chinese dictionary and key-set source of truth. */
+ export const zh = {
+-  'type.label': '文件',
+-  'guide.title': '工作区文件',
+-  'guide.description': '浏览会话工作区的文件',
++  'type.label': '项目文件',
++  'guide.title': '项目文件',
++  'guide.description': '浏览当前 EasySbatch 项目中的文件',
+   loading: '正在读取…',
+   empty: '空目录',
+   truncated: '条目太多，只显示了一部分。',
+@@ -40,9 +40,9 @@ export type SidebarFilesKey = keyof typeof zh
+
+ /** English dictionary, checked against the Chinese key set. */
+ export const en = {
+-  'type.label': 'Files',
+-  'guide.title': 'Workspace files',
+-  'guide.description': 'Browse files in this session\'s workspace',
++  'type.label': 'Project files',
++  'guide.title': 'Project files',
++  'guide.description': 'Browse files in the current EasySbatch project',
+   loading: 'Reading…',
+   empty: 'Empty directory',
+   truncated: 'Too many entries, showing only some of them.',
+diff --git a/packages/client/ui-sidebar-right/src/client/shell/SidebarRight.module.css b/packages/client/ui-sidebar-right/src/client/shell/SidebarRight.module.css
+index 890d58a..64b1e41 100644
+--- a/packages/client/ui-sidebar-right/src/client/shell/SidebarRight.module.css
++++ b/packages/client/ui-sidebar-right/src/client/shell/SidebarRight.module.css
+@@ -32,7 +32,8 @@
+      raised surface. The edge is the weight of the kit's split dividers inside
+      (ui-dockkit `.divider`), so the panel's outline and its inner rules match. */
+   background: var(--dsw-alias-bg-base);
+-  border-left: 0.5px solid var(--dsw-alias-border-l4);
++  border-left: 1px solid var(--dsw-alias-border-l3);
++  box-shadow: -8px 0 24px rgb(15 23 42 / 5%);
+   transform: translateX(100%);
+   visibility: hidden;
+   transition:
+diff --git a/packages/client/ui-sidebar-right/src/client/shell/SidebarRight.tsx b/packages/client/ui-sidebar-right/src/client/shell/SidebarRight.tsx
+index 355eedc..4e0fb98 100644
+--- a/packages/client/ui-sidebar-right/src/client/shell/SidebarRight.tsx
++++ b/packages/client/ui-sidebar-right/src/client/shell/SidebarRight.tsx
+@@ -371,7 +371,10 @@ export function RightbarSeat({
+   const track = shown && !autoFullscreen
+
+   useEffect(() => {
+-    if (surface === undefined) actions.open(sessionId)
++    // EasySbatch is a workspace-first application: reveal the bounded project
++    // file tree when a session is first mounted. Users can still collapse it,
++    // and subsequent renders preserve the committed surface state.
++    if (surface === undefined) actions.setExpanded(sessionId, true)
+   }, [actions, sessionId, surface])
+
+   useLayoutEffect(() => {
+diff --git a/packages/client/ui-sidebar/src/client/SidebarRoot.module.css b/packages/client/ui-sidebar/src/client/SidebarRoot.module.css
+index f899b50..b625a79 100644
+--- a/packages/client/ui-sidebar/src/client/SidebarRoot.module.css
++++ b/packages/client/ui-sidebar/src/client/SidebarRoot.module.css
+@@ -11,7 +11,7 @@
+   display: flex;
+   flex-direction: column;
+   height: 100%;
+-  padding: 6px var(--dsh-sidebar-inline-padding);
++  padding: 14px var(--dsh-sidebar-inline-padding) 10px;
+   box-sizing: border-box;
+   background: var(--dsw-specific-sidebar-fill);
+   color: var(--dsw-alias-label-primary);
+@@ -257,10 +257,10 @@
+   padding: 8px 16px;
+   margin: 0 2px 8px;
+   box-sizing: border-box;
+-  border: 0.5px solid var(--dsw-alias-border-l3);
++  border: 1px solid var(--dsw-alias-state-business-primary);
+   border-radius: 12px;
+-  background: var(--dsw-alias-button-elevated-fill);
+-  color: var(--dsw-alias-label-primary);
++  background: var(--dsw-alias-state-business-tertiary);
++  color: var(--dsw-alias-state-business-primary);
+   font-size: 14px;
+   font-weight: 500;
+   line-height: 22px;
+@@ -328,8 +328,8 @@
+ }
+
+ .panelRow.panelActive {
+-  background: var(--dsw-alias-interactive-bg-active);
+-  color: var(--dsw-alias-label-primary);
++  background: var(--dsw-alias-state-business-tertiary);
++  color: var(--dsw-alias-state-business-primary);
+   font-weight: 500;
+ }
+
+diff --git a/packages/client/ui-sidebar/src/client/locales.ts b/packages/client/ui-sidebar/src/client/locales.ts
+index bdd1486..4397daf 100644
+--- a/packages/client/ui-sidebar/src/client/locales.ts
++++ b/packages/client/ui-sidebar/src/client/locales.ts
+@@ -2,8 +2,8 @@
+
+ /** Simplified Chinese dictionary (the key-set source of truth). */
+ export const zh = {
+-  'session.new': '新会话',
+-  'session.new.label': '新建会话',
++  'session.new': '新建任务',
++  'session.new.label': '新建计算任务',
+   'toggle.open': '打开侧边栏',
+   'toggle.collapse': '收起侧边栏',
+   'panels.label': '全局面板',
+@@ -14,8 +14,8 @@ export type SidebarKey = keyof typeof zh
+
+ /** English dictionary, checked complete against the zh key set. */
+ export const en = {
+-  'session.new': 'New Session',
+-  'session.new.label': 'New session',
++  'session.new': 'New task',
++  'session.new.label': 'New compute task',
+   'toggle.open': 'Open sidebar',
+   'toggle.collapse': 'Collapse sidebar',
+   'panels.label': 'Global panels',

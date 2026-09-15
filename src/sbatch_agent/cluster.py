@@ -4,8 +4,12 @@ from collections import Counter
 from dataclasses import replace
 from datetime import datetime, timezone
 import os
-import pwd
 import re
+
+try:  # ``pwd`` is unavailable in the Windows desktop build.
+    import pwd
+except ImportError:  # pragma: no cover - exercised by Windows packaging smoke
+    pwd = None
 
 from .cluster_models import (
     ClusterSnapshot, GPUCount, NodeSnapshot, PartitionSnapshot, PartitionQueue,
@@ -271,12 +275,23 @@ def parse_cluster_name(output: str) -> str:
 class ClusterService:
     """One bounded observation under current Linux identity. No DB or cache."""
 
-    def __init__(self, client: SlurmClusterClient | None = None):
+    def __init__(self, client: SlurmClusterClient | None = None, *, current_user: str | None = None):
+        if current_user is not None and (
+            not isinstance(current_user, str) or not current_user
+            or not current_user.isprintable() or "|" in current_user
+        ):
+            raise ValueError("current_user must be printable nonblank text without '|'")
         self.client = client if client is not None else SlurmClusterClient()
+        self.current_user = current_user
 
     def get_snapshot(self) -> ClusterSnapshot:
         warnings = []
-        current_user = pwd.getpwuid(os.geteuid()).pw_name
+        if self.current_user is not None:
+            current_user = self.current_user
+        elif pwd is not None:
+            current_user = pwd.getpwuid(os.geteuid()).pw_name
+        else:  # A desktop caller should always pass the configured SSH user.
+            raise ClusterUnavailableError("Current cluster user is unavailable.")
 
         def query(name, parser, *, required=False):
             try:

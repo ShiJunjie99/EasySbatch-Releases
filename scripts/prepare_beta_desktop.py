@@ -160,6 +160,7 @@ def _apply_product_layer(root: Path, lock: dict[str, str]) -> None:
         "upstream_archive_sha256": lock["archive_sha256"],
         "shipped_agent_presets": ["beta-easysbatch"],
         "submission_enabled": False,
+        "user_confirmed_submission_supported": True,
     }
     (root / MARKER).write_text(json.dumps(marker, indent=2) + "\n", encoding="utf-8")
 

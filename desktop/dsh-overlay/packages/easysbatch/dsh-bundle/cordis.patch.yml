@@ -1,7 +1,11 @@
 # Beta EasySbatch deliberately removes all general-purpose model tools. The
-# only preset shipped by the prepared source mounts the restricted sidecar
-# adapter; no shell, filesystem mutation, Web, skill, goal, workflow, todo, or
-# subagent tool is exposed.
+# product panels use a separate restricted Remote service for user-confirmed
+# Slurm actions; the model preset exposes no shell, filesystem mutation, Web,
+# skill, goal, workflow, todo, subagent, or submission tool.
+
+- insert:
+    - id: easysbatch-product
+      name: '@deepseek-ai/dsh-easysbatch-product'
 
 - id: session-telemetry-otel
   disabled: true

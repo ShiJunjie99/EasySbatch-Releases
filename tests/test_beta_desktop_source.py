@@ -38,12 +38,42 @@ def test_bundle_disables_telemetry_and_user_presets():
     assert "session-telemetry-otel" in patch
     assert "includeUserRoot: false" in patch
     assert "default: beta-easysbatch" in patch
+    assert "@deepseek-ai/dsh-easysbatch-product" in patch
 
 
 def test_desktop_patch_adds_custom_packages_to_clean_host_build():
     patch = (ROOT / "desktop/dsh-patches/0001-beta-easysbatch-desktop.patch").read_text(encoding="utf-8")
     assert '"./packages/easysbatch/dsh-tool"' in patch
+    assert '"./packages/easysbatch/dsh-product/tsconfig.host.json"' in patch
+    assert '"./packages/easysbatch/dsh-product/tsconfig.client.json"' in patch
+    assert "'packages/easysbatch/dsh-product'" in patch
     assert '"./packages/easysbatch/dsh-bundle"' in patch
+
+
+def test_product_ui_owns_history_cluster_and_explicit_submission():
+    product = ROOT / "desktop/dsh-overlay/packages/easysbatch/dsh-product"
+    client = (product / "src/client/index.tsx").read_text(encoding="utf-8")
+    host = (product / "src/index.ts").read_text(encoding="utf-8")
+    tool = (ROOT / "desktop/dsh-overlay/packages/easysbatch/dsh-tool/src/index.ts").read_text(encoding="utf-8")
+    assert "任务记录" in client
+    assert "集群资源" in client
+    assert "window.confirm" in client
+    assert "submitJob(job.id, job.id)" in client
+    assert "@Remote('submitJob')" in host
+    assert "easysbatch_recommend_job" in tool
+    assert "easysbatch_prepare_job" in tool
+    assert "name: 'easysbatch_submit_job'" not in tool
+
+
+def test_desktop_patch_uses_workspace_first_easysbatch_layout():
+    patch = (ROOT / "desktop/dsh-patches/0001-beta-easysbatch-desktop.patch").read_text(encoding="utf-8")
+    assert "SIDEBAR_DEFAULT = 220" in patch
+    assert "RIGHTBAR_DEFAULT_RATIO = 0.50" in patch
+    assert "actions.setExpanded(sessionId, true)" in patch
+    assert "handle[data-side='rightbar']::after" in patch
+    assert "'type.label': '项目文件'" in patch
+    assert "'hero.headline': '告诉我你要运行什么'" in patch
+    assert "conversation.hero.brand.mark" in patch
 
 
 def test_desktop_patch_skips_seed_signing_only_for_unsigned_beta_builds():

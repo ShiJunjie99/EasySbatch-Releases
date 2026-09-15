@@ -1,33 +1,51 @@
 """Bounded stdio bridge used by the Beta EasySbatch desktop application.
 
-The bridge is deliberately smaller than the existing Web service. It exposes
-read-only project inspection and deterministic JobSpec validation/rendering;
-it never starts a shell, opens SSH, contacts Slurm, or submits a job.
+The model-facing surface remains read-only apart from saving a local draft.
+User-driven desktop panels may also inspect the cluster, submit an already
+reviewed immutable draft, and refresh its status through the credential-free,
+fixed-command OpenSSH adapter.
 """
 
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import stat
 import sys
+import tempfile
 from typing import BinaryIO, TextIO
 
 from pydantic import ValidationError
 
+from .cluster import ClusterService, ClusterUnavailableError, SlurmClusterClient
+from .cluster_models import ClusterSnapshot
+from .cluster_profile import ClusterProfile
+from .desktop_ssh import DesktopSSHSlurmRunner, DesktopSSHUnavailableError
+from .launcher_client import validate_username
 from .models import JobSpec
+from .persistence import JobRecord, JobRepository, PersistenceError
 from .profiles import StaticProfiles
+from .recommendation_models import RecommendationReport, UserPreference
+from .recommender import RecommendationInputError, ResourceRecommender
 from .renderer import JobSpecValidationError, render_job_script
 from .scanner import ProjectScanError, ProjectScanner
 from .scanner_models import ProjectEvidence, ScanConfig
+from .service import (
+    JobNotSubmittedError, JobNotSubmittableError, SubmissionService,
+    SubmissionServiceError,
+)
+from .slurm import SlurmClient, resolve_log_path
 
 
 PRODUCT_NAME = "Beta EasySbatch"
 PROTOCOL_VERSION = 1
 MAX_REQUEST_BYTES = 1024 * 1024
 MAX_PROFILE_BYTES = 512 * 1024
+MAX_CONNECTION_BYTES = 16 * 1024
 MAX_RESPONSE_BYTES = 1024 * 1024
 
 
@@ -63,12 +81,12 @@ def _validation_message(exc: ValidationError) -> str:
     return "Invalid structured data: " + "; ".join(issues)
 
 
-def _read_regular_file(path_value: object, *, limit: int) -> bytes:
+def _read_regular_file(path_value: object, *, limit: int, label: str = "profiles_path") -> bytes:
     if not isinstance(path_value, str) or not path_value.strip() or not path_value.isprintable():
-        raise SidecarError("INVALID_PARAMS", "profiles_path must be a printable absolute path")
+        raise SidecarError("INVALID_PARAMS", f"{label} must be a printable absolute path")
     path = Path(path_value)
     if not path.is_absolute() or ".." in path.parts:
-        raise SidecarError("INVALID_PARAMS", "profiles_path must be absolute and cannot contain '..'")
+        raise SidecarError("INVALID_PARAMS", f"{label} must be absolute and cannot contain '..'")
     try:
         path_info = os.lstat(path)
     except OSError:
@@ -136,6 +154,208 @@ def _load_profiles(path_value: object) -> StaticProfiles:
         raise SidecarError("PROFILE_INVALID", "The configured profile file is not a valid StaticProfiles document") from None
 
 
+def _absolute_path(path_value: object, *, label: str) -> Path:
+    if not isinstance(path_value, str) or not path_value.strip() or not path_value.isprintable():
+        raise SidecarError("INVALID_PARAMS", f"{label} must be a printable absolute path")
+    path = Path(path_value)
+    if not path.is_absolute() or ".." in path.parts:
+        raise SidecarError("INVALID_PARAMS", f"{label} must be absolute and cannot contain '..'")
+    return path
+
+
+def _unique_json(raw: bytes, *, code: str, message: str) -> object:
+    def pairs(values):
+        result = {}
+        for key, value in values:
+            if key in result:
+                raise ValueError("duplicate key")
+            result[key] = value
+        return result
+
+    try:
+        return json.loads(raw, object_pairs_hook=pairs)
+    except (UnicodeError, json.JSONDecodeError, ValueError, RecursionError):
+        raise SidecarError(code, message) from None
+
+
+def _load_cluster_runner(path_value: object) -> tuple[DesktopSSHSlurmRunner, ClusterProfile, str]:
+    try:
+        raw = _read_regular_file(
+            path_value, limit=MAX_CONNECTION_BYTES, label="cluster_config_path",
+        )
+    except SidecarError:
+        raise SidecarError(
+            "CLUSTER_CONFIG_UNAVAILABLE",
+            "The desktop cluster configuration is missing or cannot be opened",
+        ) from None
+    data = _unique_json(
+        raw, code="CLUSTER_CONFIG_INVALID",
+        message="The desktop cluster configuration is invalid",
+    )
+    try:
+        if not isinstance(data, dict) or set(data) != {"profile", "username"}:
+            raise ValueError
+        profile = ClusterProfile.from_mapping(data["profile"])
+        username = validate_username(data["username"])
+        return DesktopSSHSlurmRunner(profile=profile, username=username), profile, username
+    except (ValueError, TypeError, DesktopSSHUnavailableError):
+        raise SidecarError(
+            "CLUSTER_CONFIG_INVALID",
+            "The desktop cluster configuration is invalid or system OpenSSH is unavailable",
+        ) from None
+
+
+def _repository(path_value: object) -> JobRepository:
+    path = _absolute_path(path_value, label="database_path")
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        return JobRepository(path)
+    except (OSError, PersistenceError):
+        raise SidecarError("JOB_STORE_UNAVAILABLE", "The desktop task history is unavailable") from None
+
+
+def _write_private_json(path_value: object, value: object) -> None:
+    path = _absolute_path(path_value, label="cluster_config_path")
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if path.exists() and path.is_symlink():
+            raise OSError("configuration path cannot be a link")
+        payload = (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent,
+        )
+        temporary = Path(temporary_name)
+        try:
+            os.chmod(temporary, 0o600)
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+    except OSError:
+        raise SidecarError(
+            "CLUSTER_CONFIG_UNAVAILABLE",
+            "The desktop cluster configuration could not be saved",
+        ) from None
+
+
+def _submission_service(values: dict[str, object]) -> SubmissionService:
+    runner, _, _ = _load_cluster_runner(values["cluster_config_path"])
+    profiles = _load_profiles(values["profiles_path"])
+    repository = _repository(values["database_path"])
+    try:
+        root = _absolute_path(values["submission_root"], label="submission_root")
+        return SubmissionService(
+            repository=repository,
+            slurm_client=SlurmClient(runner=runner),
+            profiles=profiles,
+            submission_root=root,
+        )
+    except Exception:
+        repository.close()
+        raise
+
+
+def _status_view(record: JobRecord) -> dict[str, object] | None:
+    status = record.job_status
+    if status is None:
+        return None
+    return {
+        "normalized_state": status.normalized_state.value,
+        "raw_state": status.raw_state,
+        "source": status.source,
+        "reason": status.reason,
+        "partition": status.partition,
+        "exit_code": status.exit_code,
+        "signal": status.signal,
+        "start": status.start,
+        "end": status.end,
+    }
+
+
+def _record_view(record: JobRecord, *, detail: bool) -> dict[str, object]:
+    spec = record.job_spec
+    stdout = stderr = None
+    if record.slurm_job_id is not None:
+        try:
+            stdout = resolve_log_path(record.stdout_path, record.slurm_job_id, work_dir=spec.work_dir)
+            stderr = resolve_log_path(record.stderr_path, record.slurm_job_id, work_dir=spec.work_dir)
+        except ValueError:
+            # Preserve declarations below; an unsupported token is not guessed.
+            pass
+    result: dict[str, object] = {
+        "id": record.id,
+        "name": record.name,
+        "slurm_job_id": record.slurm_job_id,
+        "cluster_name": record.cluster_name,
+        "submission_state": record.submission_state.value,
+        "submission_error": record.submission_error,
+        "status": _status_view(record),
+        "created_at": record.created_at.isoformat(),
+        "updated_at": record.updated_at.isoformat(),
+        "entrypoint": spec.entrypoint,
+        "run_type": spec.run_type,
+        "work_dir": spec.work_dir,
+        "resources": spec.resources.model_dump(mode="json"),
+        "stdout_path": stdout if stdout is not None else record.stdout_path,
+        "stderr_path": stderr if stderr is not None else record.stderr_path,
+    }
+    if detail:
+        result.update({
+            "job_spec": spec.model_dump(mode="json"),
+            "rendered_script": record.rendered_script,
+            "script_path": record.script_path,
+        })
+    return result
+
+
+def _snapshot_view(snapshot: ClusterSnapshot) -> dict[str, object]:
+    summary = asdict(snapshot.summary)
+    return {
+        "captured_at": snapshot.captured_at.isoformat(),
+        "cluster_name": snapshot.cluster_name,
+        "current_user": snapshot.current_user,
+        "summary": summary,
+        "queue": asdict(snapshot.queue) if snapshot.queue is not None else None,
+        "partitions": [asdict(item) for item in snapshot.partitions],
+        "nodes": [asdict(item) for item in snapshot.nodes],
+        "warnings": list(snapshot.warnings),
+    }
+
+
+def _recommendation_view(report: RecommendationReport) -> dict[str, object]:
+    return {
+        "snapshot_captured_at": report.snapshot_captured_at.isoformat(),
+        "preference": report.preference.value,
+        "warnings": list(report.warnings),
+        "evidence": [asdict(item) for item in report.evidence],
+        "recommendations": [{
+            "id": item.id,
+            "partition": item.partition,
+            "proposed_resources": item.proposed_resources.model_dump(mode="json"),
+            "score": item.score,
+            "rank": item.rank,
+            "eligibility": item.eligibility.value,
+            "reasons": list(item.reasons),
+            "warnings": list(item.warnings),
+            "evidence": [asdict(value) for value in item.evidence],
+            "components": asdict(item.components),
+            "snapshot_captured_at": item.snapshot_captured_at.isoformat(),
+        } for item in report.recommendations],
+        "rejections": [{
+            "partition": item.partition,
+            "reasons": list(item.reasons),
+            "proposed_resources": (
+                item.proposed_resources.model_dump(mode="json")
+                if item.proposed_resources is not None else None
+            ),
+            "eligibility": item.eligibility.value,
+        } for item in report.rejections],
+    }
+
+
 def _compact_scan(evidence: ProjectEvidence) -> dict[str, object]:
     dumped = evidence.model_dump(mode="json")
     candidate_names = (
@@ -181,14 +401,74 @@ def _compact_scan(evidence: ProjectEvidence) -> dict[str, object]:
 
 
 def dispatch(method: str, params: object) -> dict[str, object]:
-    """Execute one allowlisted, non-submitting desktop operation."""
+    """Execute one allowlisted desktop operation."""
     if method == "health":
         _exact_params(params, set())
         return {
             "product": PRODUCT_NAME,
             "protocol_version": PROTOCOL_VERSION,
-            "capabilities": ["scan_project", "validate_job", "render_job"],
+            "capabilities": [
+                "scan_project", "validate_job", "render_job", "list_profiles",
+                "configure_cluster", "cluster_snapshot", "recommend_job", "create_job", "list_jobs",
+                "get_job", "submit_job", "refresh_job",
+            ],
+            "submission_supported": True,
+            # Runtime readiness is reported only after validating the explicit
+            # product-owned paths with ``runtime_status``.
             "submission_enabled": False,
+        }
+    if method == "runtime_status":
+        values = _exact_params(params, {"cluster_config_path", "profiles_path"})
+        problems = []
+        cluster = profile = None
+        try:
+            _, cluster, username = _load_cluster_runner(values["cluster_config_path"])
+        except SidecarError as exc:
+            username = None
+            problems.append(str(exc))
+        try:
+            profiles = _load_profiles(values["profiles_path"])
+        except SidecarError as exc:
+            profiles = None
+            problems.append(str(exc))
+        return {
+            "cluster_configured": cluster is not None,
+            "profiles_configured": profiles is not None,
+            "submission_enabled": cluster is not None and profiles is not None,
+            "cluster": None if cluster is None else {
+                "id": cluster.id,
+                "display_name": cluster.display_name,
+                "host": cluster.host,
+                "ssh_port": cluster.ssh_port,
+                "username": username,
+            },
+            "profile_counts": None if profiles is None else {
+                "environments": len(profiles.environments),
+                "launchers": len(profiles.launchers),
+            },
+            "problems": problems,
+        }
+    if method == "configure_cluster":
+        values = _exact_params(params, {"cluster_config_path", "profile", "username"})
+        try:
+            profile = ClusterProfile.from_mapping(values["profile"])
+            username = validate_username(values["username"])
+        except (ValueError, TypeError):
+            raise SidecarError(
+                "CLUSTER_CONFIG_INVALID",
+                "Cluster name, host, port, or Linux username is invalid",
+            ) from None
+        _write_private_json(values["cluster_config_path"], {
+            "profile": profile.to_mapping(),
+            "username": username,
+        })
+        return {
+            "saved": True,
+            "cluster": {
+                **profile.to_mapping(),
+                "username": username,
+            },
+            "credentials_stored": False,
         }
     if method == "scan_project":
         values = _exact_params(params, {"project_dir"})
@@ -233,6 +513,147 @@ def dispatch(method: str, params: object) -> dict[str, object]:
             "script": script,
             "submission_enabled": False,
         }
+    if method == "list_profiles":
+        values = _exact_params(params, {"profiles_path"})
+        profiles = _load_profiles(values["profiles_path"])
+        return {
+            "environments": [{
+                "id": item.id,
+                "version": item.version,
+                "allowed_partitions": item.allowed_partitions,
+                "resource_options": [option.model_dump(mode="json") for option in item.resource_options],
+            } for item in profiles.environments],
+            "launchers": [{
+                "id": item.id,
+                "version": item.version,
+                "supported_layouts": (
+                    None if item.supported_layouts is None
+                    else [layout.model_dump(mode="json") for layout in item.supported_layouts]
+                ),
+            } for item in profiles.launchers],
+        }
+    if method == "cluster_snapshot":
+        values = _exact_params(params, {"cluster_config_path"})
+        runner, _, username = _load_cluster_runner(values["cluster_config_path"])
+        try:
+            snapshot = ClusterService(
+                SlurmClusterClient(runner=runner), current_user=username,
+            ).get_snapshot()
+        except (ClusterUnavailableError, SubmissionServiceError):
+            raise SidecarError(
+                "CLUSTER_UNAVAILABLE",
+                "The cluster snapshot is unavailable; verify network, host key, and system OpenSSH authentication",
+            ) from None
+        return _snapshot_view(snapshot)
+    if method == "recommend_job":
+        values = _exact_params(params, {"job_spec", "profiles_path", "cluster_config_path", "preference"})
+        try:
+            spec = JobSpec.model_validate(values["job_spec"])
+            preference = UserPreference(values["preference"])
+        except ValidationError as exc:
+            raise SidecarError("JOB_SPEC_INVALID", _validation_message(exc)) from None
+        except (ValueError, TypeError):
+            raise SidecarError("INVALID_PARAMS", "preference is invalid") from None
+        profiles = _load_profiles(values["profiles_path"])
+        runner, _, username = _load_cluster_runner(values["cluster_config_path"])
+        try:
+            snapshot = ClusterService(
+                SlurmClusterClient(runner=runner), current_user=username,
+            ).get_snapshot()
+            report = ResourceRecommender().recommend(
+                spec=spec, snapshot=snapshot, profiles=profiles,
+                preference=preference, as_of=datetime.now(timezone.utc),
+            )
+        except ClusterUnavailableError:
+            raise SidecarError(
+                "CLUSTER_UNAVAILABLE",
+                "Resource recommendation needs a fresh cluster snapshot; verify the SSH connection",
+            ) from None
+        except RecommendationInputError as exc:
+            raise SidecarError("RECOMMENDATION_UNAVAILABLE", str(exc)) from None
+        return _recommendation_view(report)
+    if method == "create_job":
+        values = _exact_params(params, {"job_spec", "name", "profiles_path", "database_path", "submission_root"})
+        name = values["name"]
+        if name is not None and (not isinstance(name, str) or not name.strip() or not name.isprintable()):
+            raise SidecarError("INVALID_PARAMS", "name must be null or printable nonblank text")
+        try:
+            spec = JobSpec.model_validate(values["job_spec"])
+        except ValidationError as exc:
+            raise SidecarError("JOB_SPEC_INVALID", _validation_message(exc)) from None
+        profiles = _load_profiles(values["profiles_path"])
+        repository = _repository(values["database_path"])
+        try:
+            root = _absolute_path(values["submission_root"], label="submission_root")
+            record = SubmissionService(
+                repository=repository, slurm_client=SlurmClient(),
+                profiles=profiles, submission_root=root,
+            ).create_job(spec=spec, name=name)
+            return _record_view(record, detail=True)
+        except (JobSpecValidationError, PersistenceError, ValueError):
+            raise SidecarError(
+                "JOB_NOT_READY",
+                "The reviewed JobSpec could not be saved; resolve all fields and verify the profile configuration",
+            ) from None
+        finally:
+            repository.close()
+    if method == "list_jobs":
+        values = _exact_params(params, {"database_path", "limit"})
+        limit = values["limit"]
+        if type(limit) is not int or not 1 <= limit <= 200:
+            raise SidecarError("INVALID_PARAMS", "limit must be an integer from 1 through 200")
+        repository = _repository(values["database_path"])
+        try:
+            return {"jobs": [_record_view(record, detail=False) for record in repository.list(limit=limit)]}
+        except PersistenceError:
+            raise SidecarError("JOB_STORE_UNAVAILABLE", "The desktop task history is unavailable") from None
+        finally:
+            repository.close()
+    if method == "get_job":
+        values = _exact_params(params, {"database_path", "record_id"})
+        repository = _repository(values["database_path"])
+        try:
+            return _record_view(repository.get(values["record_id"]), detail=True)
+        except (PersistenceError, ValueError, TypeError):
+            raise SidecarError("JOB_NOT_FOUND", "The requested task record was not found") from None
+        finally:
+            repository.close()
+    if method in {"submit_job", "refresh_job"}:
+        expected = {
+            "record_id", "profiles_path", "database_path", "submission_root",
+            "cluster_config_path",
+        }
+        if method == "submit_job":
+            expected.add("confirmation")
+        values = _exact_params(params, expected)
+        record_id = values["record_id"]
+        if method == "submit_job" and values["confirmation"] != record_id:
+            raise SidecarError(
+                "SUBMISSION_CONFIRMATION_REQUIRED",
+                "Submitting a real job requires an exact record confirmation",
+            )
+        service = None
+        try:
+            service = _submission_service(values)
+            record = (
+                service.submit_job(record_id)
+                if method == "submit_job" else service.refresh_status(record_id)
+            )
+            return _record_view(record, detail=True)
+        except JobNotSubmittableError:
+            raise SidecarError("JOB_NOT_SUBMITTABLE", "This task record cannot be submitted again") from None
+        except JobNotSubmittedError:
+            raise SidecarError("JOB_NOT_SUBMITTED", "This task has no submitted Slurm job to refresh") from None
+        except SubmissionServiceError:
+            raise SidecarError(
+                "SUBMISSION_OUTCOME_REQUIRES_REVIEW" if method == "submit_job" else "STATUS_REFRESH_FAILED",
+                "The Slurm operation did not complete cleanly; inspect the saved task state and do not resubmit automatically",
+            ) from None
+        except (PersistenceError, ValueError, TypeError):
+            raise SidecarError("JOB_OPERATION_FAILED", "The desktop task operation failed validation") from None
+        finally:
+            if service is not None:
+                service.repository.close()
     raise SidecarError("METHOD_NOT_FOUND", f"Unsupported method: {method}")
 
 
