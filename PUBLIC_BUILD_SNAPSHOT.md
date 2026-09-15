@@ -1,12 +1,17 @@
 # Beta EasySbatch public build snapshot
 
-This orphan branch is a history-free snapshot of private development commit
-`8ab439d`. It exists only so GitHub's native Windows x64 and Apple Silicon
-macOS runners can produce unsigned Beta EasySbatch test artifacts.
+This branch is the public build snapshot corresponding to private development
+commit `5059f38`. It exists so GitHub's native Windows x64 and Apple Silicon
+macOS runners can produce unsigned Beta EasySbatch test artifacts without a
+local full build.
 
-The current Beta scans a selected local workspace, validates `JobSpec`, and
-renders an sbatch script preview. It cannot connect to SSH or Slurm, execute a
-job, submit a job, or monitor a job. Do not use it for production workloads.
+The current Beta scans a selected local workspace, validates `JobSpec`, reads
+aggregate Slurm capacity, recommends a registered resource shape, renders and
+saves an immutable task draft, and shows task history. A human can submit the
+exact reviewed draft from the task panel and manually refresh its status.
+Cluster access is restricted to fixed Slurm commands over the operating
+system's OpenSSH client; the application does not read or store SSH passwords
+or private keys. Do not use unsigned Beta artifacts for production workloads.
 
 No license for the EasySbatch project is granted by this snapshot. The pinned
 DeepSeek Harness dependency retains its own upstream MIT license. No previous
