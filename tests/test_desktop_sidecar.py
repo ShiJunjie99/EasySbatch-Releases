@@ -462,3 +462,110 @@ def test_desktop_recommendation_can_compare_all_visible_partitions(tmp_path, mon
     })
     assert result == {"ok": True}
     assert captured["partition"] is None
+
+
+def test_remote_scan_drives_evidence_based_values_and_revisioned_preparation(tmp_path, monkeypatch):
+    import stat
+
+    profiles = tmp_path / "profiles.yaml"
+    catalog = tmp_path / "catalog.yaml"
+    cluster = tmp_path / "cluster.json"
+    dispatch("configure_cluster", {
+        "cluster_config_path": str(cluster), "profiles_path": str(profiles),
+        "catalog_path": str(catalog),
+        "profile": {
+            "id": "primary", "display_name": "Synthetic",
+            "host": "cluster.example.edu", "ssh_port": 22,
+        },
+        "username": "student",
+    })
+    script = (
+        b"#!/usr/bin/env bash\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n"
+        b"#SBATCH --cpus-per-task=1\n#SBATCH --mem=512M\n"
+        b"#SBATCH --time=00:10:00\npython train.py\n"
+    )
+    current_script = [script]
+
+    class SyntheticRunner:
+        def scan_project(self, path, *, timeout):
+            assert path == "/home/student/project"
+            assert timeout == 30
+            content = current_script[0]
+            return {
+                "path": path,
+                "files": [{
+                    "path": "run.sbatch", "size": len(content), "status": "read",
+                    "reason": None, "mode": stat.S_IFREG | 0o755, "data": content,
+                }],
+                "skipped_directories": [], "git_present": False,
+                "bytes_read": len(content), "warnings": [], "limits_reached": [],
+            }
+
+    monkeypatch.setattr(
+        "sbatch_agent.desktop_sidecar._load_cluster_runner",
+        lambda _path: (SyntheticRunner(), None, "student", None, None),
+    )
+    state = tmp_path / "desktop-state.sqlite3"
+    scanned = dispatch("scan_remote_project", {
+        "cluster_config_path": str(cluster), "state_database_path": str(state),
+        "path": "/home/student/project",
+    })
+    assert scanned["scan_id"]
+    assert scanned["summary"]["bytes_read"] == len(script)
+
+    job = {
+        "project_dir": "/home/student/project", "work_dir": "/home/student/project",
+        "run_type": "python", "entrypoint": "train.py",
+        "environment_profile": {"id": "cluster-default", "version": "1"},
+        "run_step": {"executable": "python", "args": ["train.py"]},
+        "resources": {
+            "partition": "cpu", "memory_mib": None, "time_limit_seconds": None,
+            "memory_policy": {"mode": "cluster_default"},
+            "walltime_policy": {"mode": "cluster_default"},
+        },
+        "unresolved": [{"field": "account", "reason": "Confirm the billing account"}],
+        "spec_version": 1,
+    }
+    recommended = dispatch("recommend_resource_values", {
+        "job_spec": job, "profiles_path": str(profiles), "catalog_path": str(catalog),
+        "state_database_path": str(state), "software_id": None,
+        "scan_id": scanned["scan_id"],
+    })
+    assert recommended["recommendations"]["memory_mib"]["value"] == 512
+    assert recommended["recommendations"]["time_limit_seconds"]["value"] == 600
+    assert recommended["recommendations"]["memory_mib"]["evidence"]["status"] == "DIRECT"
+
+    started = dispatch("start_preparation", {
+        "job_spec": job, "name": "Prepared run", "software_id": None,
+        "scan_id": scanned["scan_id"], "profiles_path": str(profiles),
+        "catalog_path": str(catalog), "state_database_path": str(state),
+    })
+    assert started["state"] == "NEEDS_INPUT"
+    assert started["revision"] == 1
+    assert started["rendered_script"] is None
+    job["unresolved"] = []
+    revised = dispatch("revise_preparation", {
+        "preparation_id": started["id"], "revision": started["revision"],
+        "job_spec": job, "name": "Prepared run", "software_id": None,
+        "scan_id": scanned["scan_id"], "profiles_path": str(profiles),
+        "catalog_path": str(catalog), "state_database_path": str(state),
+    })
+    assert revised["state"] == "READY_TO_SAVE"
+    assert revised["revision"] == 2
+    assert revised["rendered_script"].startswith("#!/usr/bin/env bash")
+    assert revised["job_spec"]["source_fingerprints"]
+
+    finalize_params = {
+        "preparation_id": revised["id"], "revision": revised["revision"],
+        "state_database_path": str(state), "profiles_path": str(profiles),
+        "catalog_path": str(catalog), "cluster_config_path": str(cluster),
+        "database_path": str(tmp_path / "jobs.sqlite3"),
+        "submission_root": str(tmp_path / "runs"),
+    }
+    current_script[0] = script + b"# changed\n"
+    changed = handle_request(request("finalize_preparation", finalize_params))
+    assert changed["error"]["code"] == "PROJECT_CHANGED"
+    current_script[0] = script
+    finalized = dispatch("finalize_preparation", finalize_params)
+    assert finalized["preparation"]["state"] == "SAVED"
+    assert finalized["job"]["submission_state"] == "SCRIPT_RENDERED"

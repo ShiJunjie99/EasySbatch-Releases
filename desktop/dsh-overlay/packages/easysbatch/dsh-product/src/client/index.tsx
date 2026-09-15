@@ -17,6 +17,7 @@ export const inject = ['remote', 'slots']
 const JOBS_PANEL = 'easysbatch-jobs' as MainPanelId
 const CLUSTER_PANEL = 'easysbatch-cluster' as MainPanelId
 const NEW_TASK_PANEL = 'easysbatch-new-task' as MainPanelId
+const PREPARATIONS_PANEL = 'easysbatch-preparations' as MainPanelId
 
 type JsonObject = Record<string, unknown>
 
@@ -82,6 +83,46 @@ interface RecommendationView {
   readonly reasons: readonly string[]
   readonly warnings: readonly string[]
   readonly capturedAt: string
+}
+
+interface ResourceEvidenceView {
+  readonly source: string
+  readonly reason: string
+  readonly status: 'DIRECT'
+  readonly evidence_refs: readonly string[]
+}
+
+interface ResourceValueView {
+  readonly value: number
+  readonly evidence: ResourceEvidenceView
+}
+
+interface RemoteScanView {
+  readonly id: string
+  readonly projectDir: string
+  readonly scannedAt: string
+  readonly filesConsidered: number
+  readonly filesSkipped: number
+  readonly bytesRead: number
+  readonly candidates: JsonObject
+  readonly warnings: readonly string[]
+  readonly ambiguities: readonly string[]
+  readonly limitsReached: readonly string[]
+}
+
+interface PreparationView {
+  readonly id: string
+  readonly revision: number
+  readonly state: string
+  readonly name: string
+  readonly projectDir: string
+  readonly entrypoint: string
+  readonly unresolved: readonly JsonObject[]
+  readonly warnings: readonly string[]
+  readonly updatedAt: string
+  readonly savedRecordId: string | null
+  readonly renderedScript?: string | null
+  readonly jobSpec?: JsonObject
 }
 
 interface ClusterView {
@@ -243,6 +284,71 @@ function recommendationOf(value: unknown): RecommendationView {
   }
 }
 
+function resourceEvidenceOf(value: unknown): ResourceEvidenceView {
+  const row = object(value)
+  if (!Array.isArray(row.evidence_refs)) throw new Error('资源依据格式无效。')
+  return {
+    source: string(row.source), reason: string(row.reason), status: 'DIRECT',
+    evidence_refs: row.evidence_refs.filter((item): item is string => typeof item === 'string'),
+  }
+}
+
+function resourceValueOf(value: unknown): ResourceValueView {
+  const row = object(value)
+  const amount = number(row.value)
+  if (amount === null || amount <= 0) throw new Error('资源推荐值无效。')
+  return { value: amount, evidence: resourceEvidenceOf(row.evidence) }
+}
+
+function remoteScanOf(value: unknown): RemoteScanView {
+  const row = object(value)
+  const summary = object(row.summary)
+  if (typeof row.scan_id !== 'string' || !Array.isArray(row.warnings)
+      || !Array.isArray(row.ambiguities) || !Array.isArray(row.limits_reached)) {
+    throw new Error('服务器项目扫描结果无效。')
+  }
+  return {
+    id: row.scan_id, projectDir: string(row.project_dir), scannedAt: string(row.scanned_at),
+    filesConsidered: number(summary.files_considered) ?? 0,
+    filesSkipped: number(summary.files_skipped) ?? 0,
+    bytesRead: number(summary.bytes_read) ?? 0,
+    candidates: object(row.candidates),
+    warnings: row.warnings.filter((item): item is string => typeof item === 'string'),
+    ambiguities: row.ambiguities.filter((item): item is string => typeof item === 'string'),
+    limitsReached: row.limits_reached.filter((item): item is string => typeof item === 'string'),
+  }
+}
+
+function scanCandidateValues(scan: RemoteScanView, group: string): string[] {
+  const rows = scan.candidates[group]
+  if (!Array.isArray(rows)) return []
+  return rows.map(item => string(object(item).value)).filter(value => value !== '').slice(0, 6)
+}
+
+function preparationOf(value: unknown): PreparationView {
+  const row = object(value)
+  if (!Array.isArray(row.unresolved) || !Array.isArray(row.warnings)) {
+    throw new Error('智能草稿格式无效。')
+  }
+  return {
+    id: string(row.id), revision: number(row.revision) ?? 0, state: string(row.state),
+    name: string(row.name, '未命名智能草稿'), projectDir: string(row.project_dir),
+    entrypoint: string(row.entrypoint), unresolved: row.unresolved.map(object),
+    warnings: row.warnings.filter((item): item is string => typeof item === 'string'),
+    updatedAt: string(row.updated_at), savedRecordId: optionalString(row.saved_record_id),
+    ...(row.rendered_script === null || typeof row.rendered_script === 'string'
+      ? { renderedScript: row.rendered_script as string | null } : {}),
+    ...(typeof row.job_spec === 'object' && row.job_spec !== null && !Array.isArray(row.job_spec)
+      ? { jobSpec: object(row.job_spec) } : {}),
+  }
+}
+
+function preparationsOf(value: unknown): readonly PreparationView[] {
+  const rows = object(value).preparations
+  if (!Array.isArray(rows)) throw new Error('智能草稿列表无效。')
+  return rows.map(preparationOf)
+}
+
 function jobsOf(value: unknown): readonly JobView[] {
   const rows = object(value).jobs
   if (!Array.isArray(rows)) throw new Error('EasySbatch returned an invalid task list')
@@ -296,11 +402,16 @@ function resourceText(resources: JsonObject): string {
   return `${string(resources.partition, '—')} · ${nodes} 节点 · ${tasks} 任务 · ${cpus} CPU${gpuCount > 0 ? ` · ${gpuCount} GPU/节点` : ''}`
 }
 
-function Icon({ kind, size, active }: { kind: 'create' | 'jobs' | 'cluster'; size: number; active: boolean }) {
+function Icon({ kind, size, active }: { kind: 'create' | 'drafts' | 'jobs' | 'cluster'; size: number; active: boolean }) {
   return kind === 'create' ? (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
       <rect x="2.5" y="2.5" width="19" height="19" rx="5" stroke="currentColor" strokeWidth="1.5" opacity={active ? 1 : .75} />
+    </svg>
+  ) : kind === 'drafts' ? (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M6 3h9l3 3v15H6V3Z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+      <path d="M9 10h6M9 14h6M9 18h4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
     </svg>
   ) : kind === 'jobs' ? (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -346,10 +457,12 @@ interface DraftForm {
   readonly cpusPerTask: string
   readonly gpuCount: string
   readonly gpuType: string
-  readonly memoryMode: 'cluster_default' | 'explicit'
+  readonly memoryMode: 'cluster_default' | 'recommended' | 'explicit'
   readonly memoryMib: string
-  readonly walltimeMode: 'cluster_default' | 'explicit'
+  readonly memoryEvidence: ResourceEvidenceView | null
+  readonly walltimeMode: 'cluster_default' | 'recommended' | 'explicit'
   readonly walltimeSeconds: string
+  readonly walltimeEvidence: ResourceEvidenceView | null
   readonly account: string
   readonly qos: string
   readonly stdout: string
@@ -363,7 +476,8 @@ const EMPTY_DRAFT: DraftForm = {
   entrypoint: '', executable: 'python', args: '', environmentId: '', launcherId: '',
   partition: '', nodes: '1', ntasks: '1', cpusPerTask: '1', gpuCount: '', gpuType: '',
   memoryMode: 'cluster_default', memoryMib: '', walltimeMode: 'cluster_default',
-  walltimeSeconds: '', account: '', qos: '', stdout: 'logs/%j.out', stderr: 'logs/%j.err',
+  memoryEvidence: null, walltimeSeconds: '', walltimeEvidence: null,
+  account: '', qos: '', stdout: 'logs/%j.out', stderr: 'logs/%j.err',
   requiredInputs: '', prepareSteps: '[]',
 }
 
@@ -403,6 +517,12 @@ function buildJobSpec(
     throw new Error('准备步骤必须是有效的 JSON 数组。')
   }
   if (!Array.isArray(prepareSteps)) throw new Error('准备步骤必须是 JSON 数组。')
+  if (form.memoryMode === 'recommended' && form.memoryEvidence === null) {
+    throw new Error('内存推荐缺少可追溯依据，请重新查找。')
+  }
+  if (form.walltimeMode === 'recommended' && form.walltimeEvidence === null) {
+    throw new Error('时限推荐缺少可追溯依据，请重新查找。')
+  }
   const resources: Record<string, JsonValue> = {
     partition: form.partition.trim(),
     nodes: positiveInteger(form.nodes, '节点数'),
@@ -416,8 +536,14 @@ function buildJobSpec(
       ? null : positiveInteger(form.memoryMib, '每节点内存'),
     time_limit_seconds: form.walltimeMode === 'cluster_default'
       ? null : positiveInteger(form.walltimeSeconds, '最长运行秒数'),
-    memory_policy: { mode: form.memoryMode },
-    walltime_policy: { mode: form.walltimeMode },
+    memory_policy: {
+      mode: form.memoryMode,
+      ...(form.memoryMode === 'recommended' ? { evidence: form.memoryEvidence as unknown as JsonValue } : {}),
+    },
+    walltime_policy: {
+      mode: form.walltimeMode,
+      ...(form.walltimeMode === 'recommended' ? { evidence: form.walltimeEvidence as unknown as JsonValue } : {}),
+    },
     ...(form.account.trim() === '' ? {} : { account: form.account.trim() }),
     ...(form.qos.trim() === '' ? {} : { qos: form.qos.trim() }),
   }
@@ -462,17 +588,47 @@ function NewTaskPanel({ ctx }: { ctx: ClientContext }) {
   const [directory, setDirectory] = useState<RemoteDirectoryView | null>(null)
   const [browseBusy, setBrowseBusy] = useState(false)
   const [recommendation, setRecommendation] = useState<RecommendationView | null>(null)
+  const [remoteScan, setRemoteScan] = useState<RemoteScanView | null>(null)
+  const [resourceEvidence, setResourceEvidence] = useState<{
+    readonly memory?: ResourceValueView
+    readonly walltime?: ResourceValueView
+  } | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const update = <K extends keyof DraftForm>(key: K, value: DraftForm[K]) => {
-    setForm(current => ({ ...current, [key]: value }))
+    setForm(current => {
+      const next = { ...current, [key]: value }
+      if (key === 'memoryMode' && value !== 'recommended') next.memoryEvidence = null
+      if (key === 'walltimeMode' && value !== 'recommended') next.walltimeEvidence = null
+      if (key === 'memoryMib' && current.memoryMode === 'recommended') {
+        next.memoryMode = 'explicit'; next.memoryEvidence = null
+      }
+      if (key === 'walltimeSeconds' && current.walltimeMode === 'recommended') {
+        next.walltimeMode = 'explicit'; next.walltimeEvidence = null
+      }
+      const policyIndependent = new Set<keyof DraftForm>([
+        'name', 'stdout', 'stderr', 'memoryMode', 'memoryMib', 'memoryEvidence',
+        'walltimeMode', 'walltimeSeconds', 'walltimeEvidence',
+      ])
+      if (!policyIndependent.has(key)) {
+        if (current.memoryMode === 'recommended') {
+          next.memoryMode = 'explicit'; next.memoryEvidence = null
+        }
+        if (current.walltimeMode === 'recommended') {
+          next.walltimeMode = 'explicit'; next.walltimeEvidence = null
+        }
+      }
+      return next
+    })
     setCreated(null)
     setPreview(null)
     setPreviewRevision(null)
     setReviewToken(null)
     setRecommendation(null)
+    setResourceEvidence(null)
+    if (key === 'projectDir') setRemoteScan(null)
   }
 
   useEffect(() => {
@@ -528,6 +684,7 @@ function NewTaskPanel({ ctx }: { ctx: ClientContext }) {
     setPreviewRevision(null)
     setReviewToken(null)
     setRecommendation(null)
+    setResourceEvidence(null)
   }
 
   const browse = async (path: string) => {
@@ -537,6 +694,29 @@ function NewTaskPanel({ ctx }: { ctx: ClientContext }) {
     if (!result.ok) setError(result.error.message)
     else setDirectory(remoteDirectoryOf(result.value))
     setBrowseBusy(false)
+  }
+  const scanRemote = async () => {
+    const path = form.projectDir.trim()
+    if (!path.startsWith('/')) {
+      setError('请先选择服务器项目绝对目录。')
+      return
+    }
+    setBusy(true)
+    setError(null)
+    const result = await ctx.remote.easySbatch.scanRemoteProject(path)
+    if (!result.ok) setError(result.error.message)
+    else {
+      setRemoteScan(remoteScanOf(result.value))
+      setResourceEvidence(null)
+      setForm(current => ({
+        ...current,
+        memoryMode: current.memoryMode === 'recommended' ? 'explicit' : current.memoryMode,
+        memoryEvidence: null,
+        walltimeMode: current.walltimeMode === 'recommended' ? 'explicit' : current.walltimeMode,
+        walltimeEvidence: null,
+      }))
+    }
+    setBusy(false)
   }
   const openBrowser = (target: 'projectDir' | 'workDir') => {
     const path = form[target].trim()
@@ -570,8 +750,9 @@ function NewTaskPanel({ ctx }: { ctx: ClientContext }) {
         const walltimePolicy = object(resources.walltime_policy)
         const memoryMode = string(memoryPolicy.mode)
         const walltimeMode = string(walltimePolicy.mode)
-        if (!['cluster_default', 'explicit'].includes(memoryMode) || !['cluster_default', 'explicit'].includes(walltimeMode)) {
-          throw new Error('推荐结果包含当前手动面板无法安全表达的资源依据。')
+        if (!['cluster_default', 'recommended', 'explicit'].includes(memoryMode)
+            || !['cluster_default', 'recommended', 'explicit'].includes(walltimeMode)) {
+          throw new Error('推荐结果包含未知的资源策略。')
         }
         setForm(current => ({
           ...current,
@@ -583,8 +764,12 @@ function NewTaskPanel({ ctx }: { ctx: ClientContext }) {
           gpuType: gpus === null ? '' : string(gpus.gpu_type),
           memoryMode: memoryMode as DraftForm['memoryMode'],
           memoryMib: resources.memory_mib === null ? '' : String(number(resources.memory_mib) ?? ''),
+          memoryEvidence: memoryMode === 'recommended'
+            ? resourceEvidenceOf(memoryPolicy.evidence) : null,
           walltimeMode: walltimeMode as DraftForm['walltimeMode'],
           walltimeSeconds: resources.time_limit_seconds === null ? '' : String(number(resources.time_limit_seconds) ?? ''),
+          walltimeEvidence: walltimeMode === 'recommended'
+            ? resourceEvidenceOf(walltimePolicy.evidence) : null,
           account: string(resources.account), qos: string(resources.qos),
         }))
         setRecommendation(advice)
@@ -594,6 +779,43 @@ function NewTaskPanel({ ctx }: { ctx: ClientContext }) {
       }
     } catch (value) {
       setError(value instanceof Error ? value.message : '无法生成资源建议。')
+    }
+    setBusy(false)
+  }
+  const recommendValues = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const spec = draft()
+      const result = await ctx.remote.easySbatch.recommendResourceValues(
+        spec, form.softwareId || null, remoteScan?.id ?? null,
+      )
+      if (!result.ok) setError(result.error.message)
+      else {
+        const recommendations = object(object(result.value).recommendations)
+        const memory = recommendations.memory_mib === undefined
+          ? undefined : resourceValueOf(recommendations.memory_mib)
+        const walltime = recommendations.time_limit_seconds === undefined
+          ? undefined : resourceValueOf(recommendations.time_limit_seconds)
+        if (memory === undefined && walltime === undefined) {
+          throw new Error('没有找到与当前命令和并行布局完全一致的已核验内存或时限依据。')
+        }
+        setResourceEvidence({ memory, walltime })
+        setForm(current => ({
+          ...current,
+          ...(memory === undefined ? {} : {
+            memoryMode: 'recommended' as const,
+            memoryMib: String(memory.value), memoryEvidence: memory.evidence,
+          }),
+          ...(walltime === undefined ? {} : {
+            walltimeMode: 'recommended' as const,
+            walltimeSeconds: String(walltime.value), walltimeEvidence: walltime.evidence,
+          }),
+        }))
+        setPreview(null); setPreviewRevision(null); setReviewToken(null)
+      }
+    } catch (value) {
+      setError(value instanceof Error ? value.message : '无法生成内存或时限建议。')
     }
     setBusy(false)
   }
@@ -645,12 +867,18 @@ function NewTaskPanel({ ctx }: { ctx: ClientContext }) {
         {loading ? <div className={css.listMessage}>正在读取服务器配置…</div> : <>
           <div className={css.formSection}><h2>任务与程序</h2><div className={css.formGrid}>
             <label className={css.span2}><span>任务名称</span><input value={form.name} onChange={event => { update('name', event.target.value) }} /></label>
-            <div className={css.fieldBlock}><span>服务器项目目录 <button type="button" className={css.textButton} disabled={!runtime?.clusterConfigured || browseBusy} onClick={() => { openBrowser('projectDir') }}>浏览</button></span><input value={form.projectDir} placeholder="/home/user/project" onChange={event => { update('projectDir', event.target.value); if (form.workDir === '') update('workDir', event.target.value) }} /></div>
+            <div className={css.fieldBlock}><span>服务器项目目录 <span className={css.fieldActions}><button type="button" className={css.textButton} disabled={!runtime?.clusterConfigured || browseBusy} onClick={() => { openBrowser('projectDir') }}>浏览</button><button type="button" className={css.textButton} disabled={!runtime?.clusterConfigured || busy} onClick={() => { void scanRemote() }}>只读扫描</button></span></span><input value={form.projectDir} placeholder="/home/user/project" onChange={event => { update('projectDir', event.target.value); if (form.workDir === '') update('workDir', event.target.value) }} /></div>
             <div className={css.fieldBlock}><span>服务器工作目录 <button type="button" className={css.textButton} disabled={!runtime?.clusterConfigured || browseBusy} onClick={() => { openBrowser('workDir') }}>浏览</button></span><input value={form.workDir} placeholder="/home/user/project" onChange={event => { update('workDir', event.target.value) }} /></div>
             {directory !== null && browserTarget !== null && <div className={`${css.remoteBrowser} ${css.span2}`}>
               <div className={css.browserBar}><div><span>服务器目录</span><code>{directory.path}</code></div><div><button type="button" className={css.textButton} disabled={browseBusy || parentDirectory === '/'} onClick={() => { if (parentDirectory !== null) void browse(parentDirectory) }}>上一级</button><button type="button" className={css.secondary} onClick={() => { update(browserTarget, directory.path); setDirectory(null); setBrowserTarget(null) }}>选择当前目录</button><button type="button" className={css.textButton} onClick={() => { setDirectory(null); setBrowserTarget(null) }}>关闭</button></div></div>
               <div className={css.browserRows}>{directory.entries.map(item => item.kind === 'directory' ? <button type="button" key={item.name} disabled={browseBusy} onClick={() => { void browse(`${directory.path}/${item.name}`) }}><span>▸</span><strong>{item.name}</strong><small>文件夹</small></button> : <div key={item.name}><span>·</span><strong>{item.name}</strong><small>{item.kind === 'file' && item.size !== null ? `${item.size} B` : item.kind}</small></div>)}</div>
               {directory.truncated && <p>目录项目较多，这里只显示前 500 项。</p>}
+            </div>}
+            {remoteScan !== null && <div className={`${css.scanSummary} ${css.span2}`}>
+              <div><strong>已扫描服务器项目</strong><span>{remoteScan.filesConsidered} 个文件 · 读取 {remoteScan.bytesRead} B · {date(remoteScan.scannedAt)}</span></div>
+              {scanCandidateValues(remoteScan, 'entrypoint_candidates').length > 0 && <div className={css.candidateRow}><span>入口候选</span>{scanCandidateValues(remoteScan, 'entrypoint_candidates').map(value => <button type="button" key={value} onClick={() => { update('entrypoint', value); if (form.runType === 'python') update('args', value) }}>{value}</button>)}</div>}
+              {scanCandidateValues(remoteScan, 'input_candidates').length > 0 && <div className={css.candidateRow}><span>输入候选</span>{scanCandidateValues(remoteScan, 'input_candidates').map(value => <button type="button" key={value} onClick={() => { update('requiredInputs', [...lines(form.requiredInputs), value].filter((item, index, all) => all.indexOf(item) === index).join('\n')) }}>{value}</button>)}</div>}
+              {(remoteScan.warnings.length > 0 || remoteScan.ambiguities.length > 0) && <small>{remoteScan.ambiguities[0] ?? remoteScan.warnings[0]}</small>}
             </div>}
             <label><span>已登记软件（可选）</span><select value={form.softwareId} onChange={event => { selectSoftware(event.target.value) }}><option value="">自行填写命令</option>{software.map(item => <option key={item.id} value={item.id}>{item.displayName}{item.version === null ? '' : ` ${item.version}`} · {item.verificationStatus}</option>)}</select></label>
             <label><span>任务类型</span><select value={form.runType} onChange={event => { update('runType', event.target.value as DraftForm['runType']) }}><option value="python">Python</option><option value="installed">服务器已安装程序</option><option value="compiled">需要编译</option></select></label>
@@ -670,18 +898,18 @@ function NewTaskPanel({ ctx }: { ctx: ClientContext }) {
             <label><span>每节点 GPU 数（可选）</span><input inputMode="numeric" value={form.gpuCount} onChange={event => { update('gpuCount', event.target.value) }} /></label>
             <label><span>GPU 类型（可选）</span><input value={form.gpuType} onChange={event => { update('gpuType', event.target.value) }} /></label>
             <label><span>QoS（可选）</span><input value={form.qos} onChange={event => { update('qos', event.target.value) }} /></label>
-            <label><span>内存策略</span><select value={form.memoryMode} onChange={event => { update('memoryMode', event.target.value as DraftForm['memoryMode']) }}><option value="cluster_default">使用集群默认值</option><option value="explicit">手动指定 MiB/节点</option></select></label>
+            <label><span>内存策略</span><select value={form.memoryMode} onChange={event => { update('memoryMode', event.target.value as DraftForm['memoryMode']) }}><option value="cluster_default">使用集群默认值</option><option value="recommended" disabled={form.memoryEvidence === null}>采用有依据的推荐</option><option value="explicit">手动指定 MiB/节点</option></select></label>
             <label><span>内存 MiB/节点</span><input disabled={form.memoryMode === 'cluster_default'} inputMode="numeric" value={form.memoryMib} onChange={event => { update('memoryMib', event.target.value) }} /></label>
-            <label><span>时限策略</span><select value={form.walltimeMode} onChange={event => { update('walltimeMode', event.target.value as DraftForm['walltimeMode']) }}><option value="cluster_default">使用分区默认值</option><option value="explicit">手动指定秒数</option></select></label>
+            <label><span>时限策略</span><select value={form.walltimeMode} onChange={event => { update('walltimeMode', event.target.value as DraftForm['walltimeMode']) }}><option value="cluster_default">使用分区默认值</option><option value="recommended" disabled={form.walltimeEvidence === null}>采用有依据的推荐</option><option value="explicit">手动指定秒数</option></select></label>
             <label><span>最长运行秒数</span><input disabled={form.walltimeMode === 'cluster_default'} inputMode="numeric" value={form.walltimeSeconds} onChange={event => { update('walltimeSeconds', event.target.value) }} /></label>
-          </div>{recommendation !== null && <div className={css.recommendation}><strong>已采用建议：{recommendation.partition}</strong><span>快照 {date(recommendation.capturedAt)} · {recommendation.reasons[0] ?? '资源容量检查通过'}</span>{recommendation.warnings.length > 0 && <small>{recommendation.warnings[0]}</small>}</div>}</div>
+          </div>{recommendation !== null && <div className={css.recommendation}><strong>已采用节点布局建议：{recommendation.partition}</strong><span>快照 {date(recommendation.capturedAt)} · {recommendation.reasons[0] ?? '资源容量检查通过'}</span>{recommendation.warnings.length > 0 && <small>{recommendation.warnings[0]}</small>}</div>}{resourceEvidence !== null && <div className={css.recommendation}><strong>已采用可追溯的资源值</strong>{resourceEvidence.memory !== undefined && <span>内存 {resourceEvidence.memory.value} MiB/节点 · {resourceEvidence.memory.evidence.source}</span>}{resourceEvidence.walltime !== undefined && <span>时限 {resourceEvidence.walltime.value} 秒 · {resourceEvidence.walltime.evidence.source}</span>}<small>{resourceEvidence.memory?.evidence.reason ?? resourceEvidence.walltime?.evidence.reason}</small></div>}</div>
           <details className={css.advanced}><summary>输出路径、输入文件与准备步骤</summary><div className={css.formGrid}>
             <label><span>标准输出</span><input value={form.stdout} onChange={event => { update('stdout', event.target.value) }} /></label>
             <label><span>错误输出</span><input value={form.stderr} onChange={event => { update('stderr', event.target.value) }} /></label>
             <label className={css.span2}><span>必须存在的输入文件（每行一个）</span><textarea rows={3} value={form.requiredInputs} onChange={event => { update('requiredInputs', event.target.value) }} /></label>
             <label className={css.span2}><span>准备步骤（高级 JSON；编译任务必填）</span><textarea className={css.codeInput} rows={5} value={form.prepareSteps} onChange={event => { update('prepareSteps', event.target.value) }} /></label>
           </div></details>
-          <div className={css.actions}><button type="button" className={css.secondary} disabled={busy || runtime?.submissionEnabled !== true || runtime.catalogConfigured !== true} onClick={() => { void recommend() }}>自动推荐并采用资源</button><button type="button" className={css.secondary} disabled={busy} onClick={() => { void render() }}>生成脚本预览</button><button type="button" className={css.primary} disabled={busy || preview === null} onClick={() => { void save() }}>保存到任务记录</button></div>
+          <div className={css.actions}><button type="button" className={css.secondary} disabled={busy || runtime?.submissionEnabled !== true || runtime.catalogConfigured !== true} onClick={() => { void recommend() }}>推荐分区与节点布局</button><button type="button" className={css.secondary} disabled={busy || runtime?.catalogConfigured !== true} onClick={() => { void recommendValues() }}>查找内存/时限依据</button><button type="button" className={css.secondary} disabled={busy} onClick={() => { void render() }}>生成脚本预览</button><button type="button" className={css.primary} disabled={busy || preview === null} onClick={() => { void save() }}>保存到任务记录</button></div>
         </>}
       </section>
       <aside className={css.previewCard}><div className={css.previewHeader}><div><span className={css.eyebrow}>审核</span><h2>sbatch 脚本</h2></div><span className={css.badge}>{preview === null ? '尚未生成' : '仅预览，未提交'}</span></div>{preview === null ? <div className={css.detailEmpty}><div className={css.emptyMark}>⌘</div><p>填写左侧配置并生成预览。保存前仍会由核心层严格校验。</p></div> : <pre>{preview}</pre>}</aside>
@@ -866,6 +1094,86 @@ function JobsPanel({ ctx }: { ctx: ClientContext }) {
   )
 }
 
+function preparationStateLabel(value: string): string {
+  return {
+    NEEDS_INPUT: '等待补充', READY_TO_SAVE: '可保存', SAVED: '已转为任务',
+  }[value] ?? value
+}
+
+function SmartDraftsPanel({ ctx }: { ctx: ClientContext }) {
+  const [items, setItems] = useState<readonly PreparationView[]>([])
+  const [selected, setSelected] = useState<PreparationView | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    setLoading(true); setError(null)
+    const result = await ctx.remote.easySbatch.listPreparations(100)
+    if (!result.ok) setError(result.error.message)
+    else {
+      const next = preparationsOf(result.value)
+      setItems(next)
+      if (selected !== null) {
+        const current = next.find(item => item.id === selected.id)
+        if (current === undefined) setSelected(null)
+        else {
+          const detail = await ctx.remote.easySbatch.getPreparation(current.id)
+          if (detail.ok) setSelected(preparationOf(detail.value))
+        }
+      }
+    }
+    setLoading(false)
+  }, [ctx, selected])
+
+  useEffect(() => { void load() }, [])
+
+  const choose = async (item: PreparationView) => {
+    setError(null)
+    const result = await ctx.remote.easySbatch.getPreparation(item.id)
+    if (!result.ok) setError(result.error.message)
+    else setSelected(preparationOf(result.value))
+  }
+
+  const finalize = async (item: PreparationView) => {
+    if (!window.confirm(`确认保存“${item.name}”第 ${item.revision} 版？\n\n系统会先只读复核服务器项目；本操作只写入任务记录，不会提交到 Slurm。`)) return
+    setBusy(true); setError(null)
+    const result = await ctx.remote.easySbatch.finalizePreparation(item.id, item.revision)
+    if (!result.ok) setError(result.error.message)
+    else setSelected(preparationOf(object(result.value).preparation))
+    setBusy(false)
+    await load()
+  }
+
+  return <main className={css.panel}>
+    <header className={css.header}>
+      <div><span className={css.eyebrow}>可恢复准备流程</span><h1>智能草稿</h1><p>AI 的分析先保存在这里；每次修订都有版本号，最终保存必须由你确认。</p></div>
+      <button type="button" className={css.secondary} disabled={loading} onClick={() => { void load() }}>刷新</button>
+    </header>
+    {error !== null && <div className={css.error} role="alert">{error}</div>}
+    <div className={css.jobLayout}>
+      <section className={css.jobList} aria-label="智能草稿列表">
+        {loading && items.length === 0 && <div className={css.listMessage}>正在读取智能草稿…</div>}
+        {!loading && items.length === 0 && <div className={css.listMessage}><strong>还没有智能草稿</strong><span>先在“新建任务”扫描服务器项目，再在聊天区描述要运行的任务。</span></div>}
+        {items.map(item => <button key={item.id} type="button" className={`${css.jobRow} ${selected?.id === item.id ? css.selected : ''}`} onClick={() => { void choose(item) }}>
+          <span className={css.jobTop}><strong>{item.name}</strong><span className={css.badge}>{preparationStateLabel(item.state)}</span></span>
+          <span className={css.jobMeta}>{item.entrypoint}</span>
+          <span className={css.jobBottom}><span>版本 {item.revision} · {item.unresolved.length} 项待定</span><time>{date(item.updatedAt)}</time></span>
+        </button>)}
+      </section>
+      {selected === null ? <div className={css.detailEmpty}><div className={css.emptyMark}>✦</div><h2>选择一份智能草稿</h2><p>这里会显示待补信息、服务器扫描依据和最终脚本。</p></div> : <article className={css.detail}>
+        <div className={css.detailHeader}><div><span className={css.eyebrow}>智能准备 · 版本 {selected.revision}</span><h2>{selected.name}</h2><p>{selected.projectDir}</p></div><span className={css.badge}>{preparationStateLabel(selected.state)}</span></div>
+        <div className={css.infoGrid}><div><span>入口程序</span><strong>{selected.entrypoint}</strong></div><div><span>更新时间</span><strong>{date(selected.updatedAt)}</strong></div><div className={css.wideInfo}><span>状态说明</span><strong>{selected.state === 'NEEDS_INPUT' ? '请回到聊天区补充下面的信息，AI 会在同一草稿上产生新版本。' : selected.state === 'READY_TO_SAVE' ? '结构校验和脚本渲染已完成，等待你的最终检查。' : '这份草稿已经保存到任务记录，仍未提交到 Slurm。'}</strong></div></div>
+        {selected.unresolved.length > 0 && <section className={css.section}><h3>需要补充</h3><ul className={css.questionList}>{selected.unresolved.map((value, index) => <li key={`${string(value.field)}-${index}`}><strong>{string(value.field)}</strong><span>{string(value.reason)}</span></li>)}</ul></section>}
+        {selected.warnings.length > 0 && <details className={css.warnings}><summary>{selected.warnings.length} 项扫描或配置说明</summary><ul>{selected.warnings.map(value => <li key={value}>{value}</li>)}</ul></details>}
+        {selected.renderedScript !== undefined && selected.renderedScript !== null && <details className={css.script} open><summary>审核 sbatch 脚本</summary><pre>{selected.renderedScript}</pre></details>}
+        {selected.jobSpec !== undefined && <details className={css.script}><summary>查看完整 JobSpec、指纹与依据</summary><pre>{JSON.stringify(selected.jobSpec, null, 2)}</pre></details>}
+        <div className={css.actions}>{selected.state === 'READY_TO_SAVE' && <button type="button" className={css.primary} disabled={busy} onClick={() => { void finalize(selected) }}>{busy ? '正在复核项目…' : '复核并保存到任务记录'}</button>}{selected.state === 'SAVED' && <span className={css.savedNote}>任务记录 ID：{selected.savedRecordId}</span>}</div>
+      </article>}
+    </div>
+  </main>
+}
+
 function ClusterPanel({ ctx }: { ctx: ClientContext }) {
   const [snapshot, setSnapshot] = useState<ClusterView | null>(null)
   const [profileSource, setProfileSource] = useState<string | null>(null)
@@ -968,6 +1276,10 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
       name: 'sidebar.panellist', id: NEW_TASK_PANEL, order: 5, label: '新建任务',
     }, ({ size, active }: SidebarPanelIconOwnerProps) => <Icon kind="create" size={size} active={active} />)),
+    ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PREPARATIONS_PANEL }, () => <SmartDraftsPanel ctx={ctx} />)),
+    ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+      name: 'sidebar.panellist', id: PREPARATIONS_PANEL, order: 8, label: '智能草稿',
+    }, ({ size, active }: SidebarPanelIconOwnerProps) => <Icon kind="drafts" size={size} active={active} />)),
     ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: JOBS_PANEL }, () => <JobsPanel ctx={ctx} />)),
     ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
       name: 'sidebar.panellist', id: JOBS_PANEL, order: 10, label: '任务记录',

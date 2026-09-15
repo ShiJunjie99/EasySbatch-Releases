@@ -150,6 +150,7 @@ export interface ProductPaths {
   readonly catalogPath: string
   readonly clusterConfigPath: string
   readonly databasePath: string
+  readonly stateDatabasePath: string
   readonly submissionRoot: string
 }
 
@@ -163,6 +164,7 @@ export function productPaths(): ProductPaths {
     catalogPath: process.env.BETA_EASYSBATCH_CATALOG_PATH ?? join(productHome, 'server-catalog.yaml'),
     clusterConfigPath: process.env.BETA_EASYSBATCH_CLUSTER_CONFIG_PATH ?? join(productHome, 'cluster.json'),
     databasePath: join(productHome, 'jobs.sqlite3'),
+    stateDatabasePath: join(productHome, 'desktop-state.sqlite3'),
     submissionRoot: join(productHome, 'runs'),
   }
 }
@@ -260,8 +262,35 @@ export function apply(ctx: Context): void {
     },
   }))
   ctx.tools.register(defineTool({
+    name: 'easysbatch_recommend_resource_values',
+    description: 'Return memory and walltime values only when an exact verified profile/catalog rule or matching project declaration provides direct inspectable evidence. Missing values remain unavailable and must not be guessed.',
+    parameters: {
+      job_spec: {
+        type: 'object', required: true, additionalProperties: true,
+        description: 'Current complete JobSpec, including its exact command and parallel layout.',
+      },
+      software_id: { type: 'string' },
+      scan_id: {
+        type: 'string',
+        description: 'Optional exact scan identifier returned by easysbatch_scan_project.',
+      },
+    },
+    output: JSON_OUTPUT,
+    async execute(args, exec) {
+      const paths = productPaths()
+      return await callCore('recommend_resource_values', {
+        job_spec: args.job_spec,
+        software_id: args.software_id ?? null,
+        scan_id: args.scan_id ?? null,
+        profiles_path: paths.profilesPath,
+        catalog_path: paths.catalogPath,
+        state_database_path: paths.stateDatabasePath,
+      }, exec.signal)
+    },
+  }))
+  ctx.tools.register(defineTool({
     name: 'easysbatch_prepare_job',
-    description: 'Validate, render, and save one immutable local task draft for explicit user review in Task history. This never contacts Slurm or submits a job.',
+    description: 'Start a persistent, revisioned preparation draft for user review. Unresolved fields keep it in NEEDS_INPUT; a resolved draft becomes READY_TO_SAVE but is never submitted or finalized by the model.',
     parameters: {
       job_spec: {
         type: 'object',
@@ -273,22 +302,53 @@ export function apply(ctx: Context): void {
         type: 'string',
         description: 'Optional user-facing task name.',
       },
-      review_sha256: {
+      software_id: {
         type: 'string',
-        required: true,
-        description: 'Exact review token returned by easysbatch_render_job for this unchanged JobSpec.',
+        description: 'Optional exact software identifier returned by easysbatch_list_catalog.',
+      },
+      scan_id: {
+        type: 'string',
+        description: 'Optional scan identifier returned by easysbatch_scan_project.',
       },
     },
     output: JSON_OUTPUT,
     async execute(args, exec) {
       const paths = productPaths()
-      return await callCore('create_job', {
+      return await callCore('start_preparation', {
         job_spec: args.job_spec,
         name: args.name ?? null,
-        review_sha256: args.review_sha256,
+        software_id: args.software_id ?? null,
+        scan_id: args.scan_id ?? null,
         profiles_path: paths.profilesPath,
-        database_path: paths.databasePath,
-        submission_root: paths.submissionRoot,
+        catalog_path: paths.catalogPath,
+        state_database_path: paths.stateDatabasePath,
+      }, exec.signal)
+    },
+  }))
+  ctx.tools.register(defineTool({
+    name: 'easysbatch_revise_preparation',
+    description: 'Revise an existing preparation using optimistic revision control. This never finalizes or submits a task.',
+    parameters: {
+      preparation_id: { type: 'string', required: true },
+      revision: { type: 'integer', required: true, minimum: 1 },
+      job_spec: { type: 'object', required: true, additionalProperties: true },
+      name: { type: 'string' },
+      software_id: { type: 'string' },
+      scan_id: { type: 'string' },
+    },
+    output: JSON_OUTPUT,
+    async execute(args, exec) {
+      const paths = productPaths()
+      return await callCore('revise_preparation', {
+        preparation_id: args.preparation_id,
+        revision: args.revision,
+        job_spec: args.job_spec,
+        name: args.name ?? null,
+        software_id: args.software_id ?? null,
+        scan_id: args.scan_id ?? null,
+        profiles_path: paths.profilesPath,
+        catalog_path: paths.catalogPath,
+        state_database_path: paths.stateDatabasePath,
       }, exec.signal)
     },
   }))
@@ -298,6 +358,11 @@ export function apply(ctx: Context): void {
     parameters: {},
     output: JSON_OUTPUT,
     async execute(_args, exec) {
+      const paths = productPaths()
+      const active = await callCore('active_remote_scan', {
+        state_database_path: paths.stateDatabasePath,
+      }, exec.signal) as Record<string, unknown>
+      if (active.scan !== null && active.scan !== undefined) return active.scan as JsonValue
       const projectDir = exec.agent?.session.header.cwd
       if (projectDir === undefined) throw new Error('This session has no selected workspace')
       return await callCore('scan_project', { project_dir: projectDir }, exec.signal)

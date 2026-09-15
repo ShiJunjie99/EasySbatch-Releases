@@ -232,6 +232,7 @@
 .formGrid input:disabled { color: var(--dsw-alias-label-tertiary); background: var(--dsw-alias-bg-layer-2); }
 .textButton { padding: 0; color: var(--dsw-alias-state-business-primary); font: inherit; font-size: 12px; font-weight: 650; background: transparent; border: 0; cursor: pointer; }
 .textButton:disabled { color: var(--dsw-alias-label-tertiary); cursor: not-allowed; }
+.fieldActions { display: inline-flex !important; justify-content: flex-end !important; gap: 10px !important; }
 .span2 { grid-column: 1 / -1; }
 .codeInput { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important; }
 .advanced { margin: -3px 0 20px; border: 1px solid var(--dsw-alias-border-l3); border-radius: 10px; }
@@ -258,6 +259,17 @@
 .browserRows strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
 .browserRows small { color: var(--dsw-alias-label-tertiary); }
 .remoteBrowser > p { margin: 8px 12px; color: #92400e; font-size: 11px; }
+.scanSummary { display: flex; flex-direction: column; gap: 9px; padding: 12px 13px; color: #075985; background: color-mix(in srgb, #e0f2fe 64%, var(--dsw-alias-bg-layer-1)); border: 1px solid #bae6fd; border-radius: 10px; }
+.scanSummary > div:first-child { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.scanSummary strong { font-size: 13px; }
+.scanSummary span,
+.scanSummary small { color: color-mix(in srgb, #075985 72%, var(--dsw-alias-label-secondary)); font-size: 11px; }
+.candidateRow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.candidateRow button { padding: 3px 7px; color: #075985; font: inherit; font-size: 11px; background: var(--dsw-alias-bg-layer-1); border: 1px solid #bae6fd; border-radius: 999px; cursor: pointer; }
+.questionList { display: grid; gap: 8px; padding: 0; margin: 0; list-style: none; }
+.questionList li { display: grid; grid-template-columns: minmax(100px, 160px) 1fr; gap: 12px; padding: 10px 12px; font-size: 13px; background: #fff8e6; border: 1px solid #f3dfad; border-radius: 9px; }
+.questionList span { color: var(--dsw-alias-label-secondary); }
+.savedNote { color: #087f5b; font-size: 12px; }
 
 .clusterTitle,
 .metrics,

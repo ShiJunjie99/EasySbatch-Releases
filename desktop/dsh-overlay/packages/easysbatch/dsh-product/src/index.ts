@@ -107,6 +107,65 @@ export class EasySbatchDesktop extends TypertRemoteService {
     }, signal)
   }
 
+  @Remote('scanRemoteProject')
+  scanRemoteProject(path: string, signal: AbortSignal): Promise<JsonValue> {
+    const value = paths()
+    return callCore('scan_remote_project', {
+      cluster_config_path: value.clusterConfigPath,
+      state_database_path: value.stateDatabasePath,
+      path,
+    }, signal)
+  }
+
+  @Remote('recommendResourceValues')
+  recommendResourceValues(
+    jobSpec: JsonValue,
+    softwareId: string | null,
+    scanId: string | null,
+    signal: AbortSignal,
+  ): Promise<JsonValue> {
+    const value = paths()
+    return callCore('recommend_resource_values', {
+      job_spec: jobSpec,
+      software_id: softwareId,
+      scan_id: scanId,
+      profiles_path: value.profilesPath,
+      catalog_path: value.catalogPath,
+      state_database_path: value.stateDatabasePath,
+    }, signal)
+  }
+
+  @Remote('listPreparations')
+  listPreparations(limit: number, signal: AbortSignal): Promise<JsonValue> {
+    return callCore('list_preparations', {
+      state_database_path: paths().stateDatabasePath,
+      limit,
+    }, signal)
+  }
+
+  @Remote('getPreparation')
+  getPreparation(preparationId: string, signal: AbortSignal): Promise<JsonValue> {
+    return callCore('get_preparation', {
+      state_database_path: paths().stateDatabasePath,
+      preparation_id: preparationId,
+    }, signal)
+  }
+
+  @Remote('finalizePreparation')
+  finalizePreparation(preparationId: string, revision: number, signal: AbortSignal): Promise<JsonValue> {
+    const value = paths()
+    return callCore('finalize_preparation', {
+      preparation_id: preparationId,
+      revision,
+      state_database_path: value.stateDatabasePath,
+      profiles_path: value.profilesPath,
+      catalog_path: value.catalogPath,
+      cluster_config_path: value.clusterConfigPath,
+      database_path: value.databasePath,
+      submission_root: value.submissionRoot,
+    }, signal)
+  }
+
   @Remote('configureCluster')
   configureCluster(
     id: string,

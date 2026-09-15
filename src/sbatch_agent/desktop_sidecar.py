@@ -29,8 +29,10 @@ from .cluster_profile import ClusterProfile
 from .desktop_catalog import catalog_source, managed_catalog
 from .desktop_profiles import managed_profiles, profile_source
 from .desktop_ssh import (
-    DesktopSSHDirectoryError, DesktopSSHSlurmRunner, DesktopSSHUnavailableError,
+    DesktopSSHDirectoryError, DesktopSSHProjectScanError, DesktopSSHSlurmRunner,
+    DesktopSSHUnavailableError,
 )
+from .desktop_state import DesktopStateError, DesktopStateRepository
 from .launcher_client import validate_username
 from .models import JobSpec
 from .persistence import JobRecord, JobRepository, PersistenceError
@@ -38,14 +40,16 @@ from .profiles import StaticProfiles
 from .recommendation_models import RecommendationReport, RecommendationRequest, UserPreference
 from .recommender import RecommendationInputError, ResourceRecommender
 from .renderer import JobSpecValidationError, render_job_script
+from .resource_policy import recommend_resource_values
 from .scanner import ProjectScanError, ProjectScanner
-from .scanner_models import ProjectEvidence, ScanConfig
+from .scanner_models import ProjectEvidence, ScanConfig, ScannedFile
 from .server_catalog import CatalogError, ServerCatalog, compatibility
 from .service import (
     JobNotSubmittedError, JobNotSubmittableError, SubmissionService,
     SubmissionServiceError,
 )
 from .slurm import SlurmClient, resolve_log_path
+from .smart_models import PreparationValues
 
 
 PRODUCT_NAME = "Beta EasySbatch"
@@ -506,7 +510,7 @@ def _recommendation_view(report: RecommendationReport) -> dict[str, object]:
     }
 
 
-def _compact_scan(evidence: ProjectEvidence) -> dict[str, object]:
+def _compact_scan(evidence: ProjectEvidence, *, scan_id: str | None = None) -> dict[str, object]:
     dumped = evidence.model_dump(mode="json")
     candidate_names = (
         "project_type_candidates",
@@ -533,6 +537,7 @@ def _compact_scan(evidence: ProjectEvidence) -> dict[str, object]:
         item for item in dumped["evidence_items"] if item["id"] in evidence_ids
     ][:120]
     return {
+        "scan_id": scan_id,
         "project_dir": dumped["project_dir"],
         "scanned_at": dumped["scanned_at"],
         "summary": {
@@ -550,6 +555,217 @@ def _compact_scan(evidence: ProjectEvidence) -> dict[str, object]:
     }
 
 
+def _state_repository(path_value: object) -> DesktopStateRepository:
+    path = _absolute_path(path_value, label="state_database_path")
+    try:
+        if path.exists():
+            info = os.lstat(path)
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or bool(
+                getattr(info, "st_file_attributes", 0)
+                & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            ):
+                raise OSError("state database must be a regular non-link file")
+        return DesktopStateRepository(path)
+    except (OSError, DesktopStateError):
+        raise SidecarError(
+            "PREPARATION_STORE_UNAVAILABLE", "The desktop preparation state is unavailable",
+        ) from None
+
+
+def _remote_scan_evidence(manifest: dict[str, object]) -> ProjectEvidence:
+    """Run the existing deterministic detectors over a validated remote snapshot."""
+    files = manifest["files"]
+    assert isinstance(files, list)
+    try:
+        with tempfile.TemporaryDirectory(prefix="beta-easysbatch-remote-scan-") as name:
+            root = Path(name)
+            for row in files:
+                assert isinstance(row, dict)
+                content = row["data"]
+                if content is None:
+                    continue
+                assert isinstance(content, bytes)
+                target = root.joinpath(*str(row["path"]).split("/"))
+                target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                target.write_bytes(content)
+                mode = row["mode"]
+                if type(mode) is int:
+                    target.chmod(0o700 if mode & 0o111 else 0o600)
+            evidence = ProjectScanner(ScanConfig(
+                max_files=500,
+                max_total_text_bytes=384 * 1024,
+                max_directory_entries=1000,
+                max_directories=160,
+                max_evidence_items=500,
+            )).scan(root)
+    except (OSError, ProjectScanError):
+        raise SidecarError(
+            "REMOTE_SCAN_INVALID", "The bounded remote project snapshot could not be analyzed",
+        ) from None
+    inventory = tuple(ScannedFile(
+        path=str(row["path"]), size_bytes=row["size"], status=str(row["status"]),
+        reason=row["reason"],
+    ) for row in files)
+    return evidence.model_copy(update={
+        "project_dir": manifest["path"],
+        "files_considered": len(inventory),
+        "files_skipped": sum(item.status == "skipped" for item in inventory),
+        "bytes_read": manifest["bytes_read"],
+        "files": tuple(sorted(inventory, key=lambda item: item.path)),
+        "skipped_directories": tuple(manifest["skipped_directories"]),
+        "git_present": manifest["git_present"],
+        "warnings": tuple(sorted(set(evidence.warnings) | set(manifest["warnings"]))),
+        "limits_reached": tuple(sorted(set(evidence.limits_reached) | set(manifest["limits_reached"]))),
+    })
+
+
+def _desktop_scan_config() -> ScanConfig:
+    return ScanConfig(
+        max_files=500,
+        max_total_text_bytes=2 * 1024 * 1024,
+        max_directory_entries=1000,
+        max_directories=160,
+        max_evidence_items=500,
+    )
+
+
+def _review_spec(
+    spec: JobSpec, *, profiles: StaticProfiles, catalog: ServerCatalog,
+    software_id: str | None,
+) -> tuple[str, str, object | None, object | None]:
+    software = catalog.software_by_id(software_id) if software_id else None
+    if software_id and software is None:
+        raise SidecarError("CATALOG_ITEM_NOT_FOUND", "The selected software is not registered")
+    if software is not None:
+        mismatches = []
+        if software.executable != spec.run_step.executable:
+            mismatches.append("executable")
+        if software.run_type != spec.run_type:
+            mismatches.append("run_type")
+        if software.environment_profile and (
+            software.environment_profile.id != spec.environment_profile.id
+            or software.environment_profile.version != spec.environment_profile.version
+        ):
+            mismatches.append("environment_profile")
+        if mismatches:
+            raise SidecarError(
+                "CATALOG_MISMATCH",
+                "The draft no longer matches the selected software: " + ", ".join(mismatches),
+            )
+    script, review_sha256 = _render(spec, profiles)
+    return script, review_sha256, software, catalog.environment(spec.environment_profile)
+
+
+def _preparation_values(spec: JobSpec) -> PreparationValues:
+    resources = spec.resources
+    return PreparationValues.model_validate({
+        "name": spec.job_name,
+        "work_dir": spec.work_dir,
+        "run_type": spec.run_type,
+        "entrypoint": spec.entrypoint,
+        "executable": spec.run_step.executable,
+        "args": spec.run_step.args,
+        "required_inputs": spec.required_inputs,
+        "environment_profile": spec.environment_profile.model_dump(mode="json"),
+        "prepare_steps": [value.model_dump(mode="json") for value in spec.prepare_steps],
+        "launcher_profile": (
+            spec.run_step.launcher_profile.model_dump(mode="json")
+            if spec.run_step.launcher_profile else None
+        ),
+        "partition": resources.partition,
+        "account": resources.account,
+        "qos": resources.qos,
+        "nodes": resources.nodes,
+        "ntasks": resources.ntasks,
+        "cpus_per_task": resources.cpus_per_task,
+        "gpu_count": resources.gpus.count if resources.gpus else 0,
+        "gpu_type": resources.gpus.gpu_type if resources.gpus else None,
+        "memory_mib": resources.memory_mib,
+        "time_limit_seconds": resources.time_limit_seconds,
+        "memory_mode": resources.memory_policy.mode,
+        "walltime_mode": resources.walltime_policy.mode,
+        "stdout": spec.stdout,
+        "stderr": spec.stderr,
+    })
+
+
+def _resource_value_recommendations(
+    spec: JobSpec, *, profiles: StaticProfiles, catalog: ServerCatalog,
+    software_id: str | None, evidence: ProjectEvidence | None,
+) -> dict[str, object]:
+    environment = next((
+        item for item in profiles.environments
+        if item.id == spec.environment_profile.id and item.version == spec.environment_profile.version
+    ), None)
+    software = catalog.software_by_id(software_id) if software_id else None
+    if software_id and software is None:
+        raise SidecarError("CATALOG_ITEM_NOT_FOUND", "The selected software is not registered")
+    recommendations = recommend_resource_values(
+        _preparation_values(spec), environment=environment,
+        software=software, project_evidence=evidence,
+    )
+    return {
+        key: value.model_dump(mode="json") for key, value in recommendations.items()
+    }
+
+
+def _scan_for_spec(
+    repository: DesktopStateRepository, *, scan_id: object, project_dir: str,
+) -> tuple[str | None, ProjectEvidence | None]:
+    try:
+        if scan_id is not None:
+            if not isinstance(scan_id, str):
+                raise DesktopStateError("remote scan identifier is invalid")
+            evidence = repository.get_scan(scan_id)
+            if evidence.project_dir != project_dir:
+                raise DesktopStateError("remote scan does not match the task project directory")
+            return scan_id, evidence
+        active = repository.active_scan()
+        if active is not None and active[1].project_dir == project_dir:
+            return active
+        return None, None
+    except DesktopStateError:
+        raise SidecarError(
+            "SCAN_EVIDENCE_INVALID", "The selected project scan is unavailable or belongs to another directory",
+        ) from None
+
+
+def _with_scan_fingerprints(spec: JobSpec, evidence: ProjectEvidence | None) -> JobSpec:
+    if evidence is None:
+        return spec
+    values = spec.model_dump(mode="json")
+    values["source_fingerprints"] = [
+        value.model_dump(mode="json") for value in evidence.source_fingerprints
+    ]
+    return JobSpec.model_validate(values)
+
+
+def _preparation_material(
+    spec: JobSpec, *, name: str | None, software_id: str | None,
+    scan_id: object, repository: DesktopStateRepository,
+    profiles: StaticProfiles, catalog: ServerCatalog,
+) -> dict[str, object]:
+    selected_scan, evidence = _scan_for_spec(
+        repository, scan_id=scan_id, project_dir=spec.project_dir,
+    )
+    spec = _with_scan_fingerprints(spec, evidence)
+    warnings = list(evidence.warnings[:40]) if evidence is not None else [
+        "此草稿未关联用户确认的服务器项目扫描；保存前无法复核项目内容是否变化。",
+    ]
+    if spec.unresolved:
+        state, script, review_sha256 = "NEEDS_INPUT", None, None
+    else:
+        script, review_sha256, _, _ = _review_spec(
+            spec, profiles=profiles, catalog=catalog, software_id=software_id,
+        )
+        state = "READY_TO_SAVE"
+    return {
+        "spec": spec, "name": name, "software_id": software_id,
+        "scan_id": selected_scan, "state": state, "rendered_script": script,
+        "review_sha256": review_sha256, "warnings": warnings,
+    }
+
+
 def dispatch(method: str, params: object) -> dict[str, object]:
     """Execute one allowlisted desktop operation."""
     if method == "health":
@@ -558,10 +774,13 @@ def dispatch(method: str, params: object) -> dict[str, object]:
             "product": PRODUCT_NAME,
             "protocol_version": PROTOCOL_VERSION,
             "capabilities": [
-                "scan_project", "validate_job", "render_job", "review_job", "list_profiles", "list_catalog",
+                "scan_project", "scan_remote_project", "active_remote_scan",
+                "validate_job", "render_job", "review_job", "list_profiles", "list_catalog",
                 "configure_cluster", "cluster_snapshot", "recommend_job", "create_job", "list_jobs",
                 "get_job", "submit_job", "refresh_job",
                 "browse_remote_directory",
+                "recommend_resource_values", "start_preparation", "revise_preparation",
+                "list_preparations", "get_preparation", "finalize_preparation",
             ],
             "submission_supported": True,
             # Runtime readiness is reported only after validating the explicit
@@ -681,13 +900,7 @@ def dispatch(method: str, params: object) -> dict[str, object]:
         project_dir = values["project_dir"]
         if not isinstance(project_dir, str):
             raise SidecarError("INVALID_PARAMS", "project_dir must be a string")
-        scanner = ProjectScanner(ScanConfig(
-            max_files=500,
-            max_total_text_bytes=2 * 1024 * 1024,
-            max_directory_entries=1000,
-            max_directories=160,
-            max_evidence_items=500,
-        ))
+        scanner = ProjectScanner(_desktop_scan_config())
         try:
             return _compact_scan(scanner.scan(project_dir))
         except ProjectScanError as exc:
@@ -730,27 +943,9 @@ def dispatch(method: str, params: object) -> dict[str, object]:
             raise SidecarError("INVALID_PARAMS", "software_id must be a string or null")
         profiles = _load_profiles(values["profiles_path"])
         catalog = _load_catalog(values["catalog_path"], profiles=profiles)
-        software = catalog.software_by_id(software_id) if software_id else None
-        if software_id and software is None:
-            raise SidecarError("CATALOG_ITEM_NOT_FOUND", "The selected software is not registered")
-        if software is not None:
-            mismatches = []
-            if software.executable != spec.run_step.executable:
-                mismatches.append("executable")
-            if software.run_type != spec.run_type:
-                mismatches.append("run_type")
-            if software.environment_profile and (
-                software.environment_profile.id != spec.environment_profile.id
-                or software.environment_profile.version != spec.environment_profile.version
-            ):
-                mismatches.append("environment_profile")
-            if mismatches:
-                raise SidecarError(
-                    "CATALOG_MISMATCH",
-                    "The draft no longer matches the selected software: " + ", ".join(mismatches),
-                )
-        script, review_sha256 = _render(spec, profiles)
-        environment = catalog.environment(spec.environment_profile)
+        script, review_sha256, software, environment = _review_spec(
+            spec, profiles=profiles, catalog=catalog, software_id=software_id,
+        )
         return {
             "job_spec": spec.model_dump(mode="json"),
             "script": script,
@@ -874,6 +1069,201 @@ def dispatch(method: str, params: object) -> dict[str, object]:
                 "REMOTE_DIRECTORY_UNAVAILABLE",
                 "The selected remote directory is unavailable; check the absolute path and SSH access",
             ) from None
+    if method == "scan_remote_project":
+        values = _exact_params(params, {"cluster_config_path", "state_database_path", "path"})
+        runner, _, _, _, _ = _load_cluster_runner(values["cluster_config_path"])
+        try:
+            manifest = runner.scan_project(values["path"], timeout=30)
+            evidence = _remote_scan_evidence(manifest)
+        except (DesktopSSHProjectScanError, ValueError):
+            raise SidecarError(
+                "REMOTE_SCAN_UNAVAILABLE",
+                "The selected remote project could not be scanned safely; check the path and SSH access",
+            ) from None
+        repository = _state_repository(values["state_database_path"])
+        try:
+            scan_id = repository.save_scan(evidence)
+            return _compact_scan(evidence, scan_id=scan_id)
+        except DesktopStateError:
+            raise SidecarError(
+                "PREPARATION_STORE_UNAVAILABLE", "The project evidence could not be saved locally",
+            ) from None
+        finally:
+            repository.close()
+    if method == "active_remote_scan":
+        values = _exact_params(params, {"state_database_path"})
+        repository = _state_repository(values["state_database_path"])
+        try:
+            active = repository.active_scan()
+            return {"scan": None} if active is None else {
+                "scan": _compact_scan(active[1], scan_id=active[0]),
+            }
+        except DesktopStateError:
+            raise SidecarError(
+                "SCAN_EVIDENCE_INVALID", "The saved project scan is unavailable",
+            ) from None
+        finally:
+            repository.close()
+    if method == "recommend_resource_values":
+        values = _exact_params(params, {
+            "job_spec", "profiles_path", "catalog_path", "state_database_path",
+            "software_id", "scan_id",
+        })
+        try:
+            spec = JobSpec.model_validate(values["job_spec"])
+        except ValidationError as exc:
+            raise SidecarError("JOB_SPEC_INVALID", _validation_message(exc)) from None
+        software_id = values["software_id"]
+        if software_id is not None and not isinstance(software_id, str):
+            raise SidecarError("INVALID_PARAMS", "software_id must be a string or null")
+        profiles = _load_profiles(values["profiles_path"])
+        catalog = _load_catalog(values["catalog_path"], profiles=profiles)
+        repository = _state_repository(values["state_database_path"])
+        try:
+            scan_id, evidence = _scan_for_spec(
+                repository, scan_id=values["scan_id"], project_dir=spec.project_dir,
+            )
+            recommendations = _resource_value_recommendations(
+                spec, profiles=profiles, catalog=catalog, software_id=software_id,
+                evidence=evidence,
+            )
+            return {
+                "scan_id": scan_id,
+                "recommendations": recommendations,
+                "unavailable": {
+                    key: "No exact verified rule or matching project declaration was found"
+                    for key in {"memory_mib", "time_limit_seconds"} - set(recommendations)
+                },
+            }
+        finally:
+            repository.close()
+    if method in {"start_preparation", "revise_preparation"}:
+        expected = {
+            "job_spec", "name", "software_id", "scan_id", "profiles_path",
+            "catalog_path", "state_database_path",
+        }
+        if method == "revise_preparation":
+            expected.update({"preparation_id", "revision"})
+        values = _exact_params(params, expected)
+        try:
+            spec = JobSpec.model_validate(values["job_spec"])
+        except ValidationError as exc:
+            raise SidecarError("JOB_SPEC_INVALID", _validation_message(exc)) from None
+        name = values["name"]
+        if name is not None and (
+            not isinstance(name, str) or not name.strip() or not name.isprintable()
+        ):
+            raise SidecarError("INVALID_PARAMS", "name must be null or printable nonblank text")
+        software_id = values["software_id"]
+        if software_id is not None and not isinstance(software_id, str):
+            raise SidecarError("INVALID_PARAMS", "software_id must be a string or null")
+        profiles = _load_profiles(values["profiles_path"])
+        catalog = _load_catalog(values["catalog_path"], profiles=profiles)
+        repository = _state_repository(values["state_database_path"])
+        try:
+            material = _preparation_material(
+                spec, name=name, software_id=software_id, scan_id=values["scan_id"],
+                repository=repository, profiles=profiles, catalog=catalog,
+            )
+            if method == "start_preparation":
+                return repository.create_preparation(**material)
+            return repository.revise_preparation(
+                values["preparation_id"], expected_revision=values["revision"], **material,
+            )
+        except DesktopStateError as exc:
+            raise SidecarError("PREPARATION_CONFLICT", str(exc)) from None
+        finally:
+            repository.close()
+    if method == "list_preparations":
+        values = _exact_params(params, {"state_database_path", "limit"})
+        repository = _state_repository(values["state_database_path"])
+        try:
+            return {"preparations": repository.list_preparations(limit=values["limit"])}
+        except DesktopStateError:
+            raise SidecarError(
+                "PREPARATION_STORE_UNAVAILABLE", "The preparation list is unavailable",
+            ) from None
+        finally:
+            repository.close()
+    if method == "get_preparation":
+        values = _exact_params(params, {"state_database_path", "preparation_id"})
+        repository = _state_repository(values["state_database_path"])
+        try:
+            return repository.get_preparation(values["preparation_id"])
+        except DesktopStateError:
+            raise SidecarError("PREPARATION_NOT_FOUND", "The preparation was not found") from None
+        finally:
+            repository.close()
+    if method == "finalize_preparation":
+        values = _exact_params(params, {
+            "preparation_id", "revision", "state_database_path", "profiles_path",
+            "catalog_path", "cluster_config_path", "database_path", "submission_root",
+        })
+        repository = _state_repository(values["state_database_path"])
+        job_repository = None
+        try:
+            try:
+                prepared = repository.get_preparation(values["preparation_id"])
+            except DesktopStateError:
+                raise SidecarError("PREPARATION_NOT_FOUND", "The preparation was not found") from None
+            if prepared["revision"] != values["revision"] or prepared["state"] != "READY_TO_SAVE":
+                raise SidecarError(
+                    "PREPARATION_CHANGED", "The preparation is not ready or has a newer revision",
+                )
+            spec = JobSpec.model_validate(prepared["job_spec"])
+            profiles = _load_profiles(values["profiles_path"])
+            catalog = _load_catalog(values["catalog_path"], profiles=profiles)
+            script, digest, _, _ = _review_spec(
+                spec, profiles=profiles, catalog=catalog,
+                software_id=prepared["software_id"],
+            )
+            if (
+                prepared["rendered_script"] != script
+                or prepared["review_sha256"] != digest
+            ):
+                raise SidecarError(
+                    "PREPARATION_CHANGED", "The rendered preparation changed and must be revised",
+                )
+            if prepared["scan_id"] is not None:
+                old = repository.get_scan(prepared["scan_id"])
+                runner, _, _, _, _ = _load_cluster_runner(values["cluster_config_path"])
+                try:
+                    fresh = _remote_scan_evidence(runner.scan_project(spec.project_dir, timeout=30))
+                except (DesktopSSHProjectScanError, ValueError):
+                    raise SidecarError(
+                        "PROJECT_RECHECK_FAILED",
+                        "The remote project could not be rechecked; the preparation was not saved",
+                    ) from None
+                old_fingerprints = {(item.path, item.sha256) for item in old.source_fingerprints}
+                fresh_fingerprints = {(item.path, item.sha256) for item in fresh.source_fingerprints}
+                if old_fingerprints != fresh_fingerprints:
+                    raise SidecarError(
+                        "PROJECT_CHANGED",
+                        "The remote project changed after preparation; scan and revise it before saving",
+                    )
+            job_repository = _repository(values["database_path"])
+            root = _absolute_path(values["submission_root"], label="submission_root")
+            record = SubmissionService(
+                repository=job_repository, slurm_client=SlurmClient(),
+                profiles=profiles, submission_root=root,
+            ).create_job(spec=spec, name=prepared["name"])
+            prepared = repository.mark_saved(
+                values["preparation_id"], expected_revision=values["revision"],
+                record_id=record.id,
+            )
+            return {"preparation": prepared, "job": _record_view(record, detail=True)}
+        except DesktopStateError as exc:
+            raise SidecarError("PREPARATION_CONFLICT", str(exc)) from None
+        except SidecarError:
+            raise
+        except (JobSpecValidationError, PersistenceError, ValueError):
+            raise SidecarError(
+                "JOB_NOT_READY", "The prepared task could not be saved",
+            ) from None
+        finally:
+            if job_repository is not None:
+                job_repository.close()
+            repository.close()
     if method == "recommend_job":
         values = _exact_params(params, {
             "job_spec", "profiles_path", "catalog_path", "cluster_config_path",

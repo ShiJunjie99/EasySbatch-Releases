@@ -8,6 +8,7 @@ the operating-system OpenSSH client.
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Sequence
 import os
 from pathlib import Path
@@ -27,6 +28,8 @@ from .runner import CommandResult, SlurmCommandError, _validate_timeout
 MAX_SCRIPT_BYTES = 2 * 1024 * 1024
 MAX_COMMAND_OUTPUT_BYTES = 2 * 1024 * 1024
 MAX_DIRECTORY_ENTRIES = 500
+MAX_REMOTE_SCAN_TEXT_BYTES = 384 * 1024
+MAX_REMOTE_SCAN_FILES = 500
 
 _DIRECTORY_SCRIPT = r'''import json, os, stat, sys
 p = sys.argv[1]
@@ -51,12 +54,125 @@ rows.sort(key=lambda row: (row["kind"] != "directory", row["name"].casefold(), r
 print(json.dumps({"path": p, "entries": rows, "truncated": truncated}, ensure_ascii=False, separators=(",", ":")))'''
 
 
+# This program is sent as one fixed ``python3 -c`` argument.  The only dynamic
+# argument is a separately quoted, UI-selected absolute directory.  It never
+# imports project code, executes a project command, follows a symlink, or writes
+# to the cluster.  The lower text budget leaves room for base64 and metadata
+# inside the transport's fixed two-MiB response limit.
+_PROJECT_SCAN_SCRIPT = r'''import base64, json, os, stat, sys
+root = sys.argv[1]
+IGNORE = {".git", ".venv", "venv", "__pycache__", "node_modules", "build", "dist", ".cache", ".pytest_cache", ".idea", ".vscode", ".sbatch-agent", "trajectory", "trajectories", "output", "outputs", "results", "checkpoints"}
+BINARY = {".xtc", ".trr", ".dcd", ".tng", ".nc", ".h5", ".hdf5", ".npy", ".npz", ".pt", ".pth", ".ckpt", ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".so", ".o", ".a", ".bin", ".db", ".sqlite", ".sqlite3", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".woff", ".tpr", ".exe"}
+TEXT = {".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".cu", ".sh", ".bash", ".sbatch", ".slurm", ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".in", ".dat", ".txt", ".gro", ".top", ".mdp", ".data", ".xyz", ".pdb", ".itp", ".py"}
+SPECIAL = {"pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "environment.yml", "environment.yaml", "pipfile", "poetry.lock", "cmakelists.txt", "makefile"}
+MAX_FILES, MAX_DIRS, MAX_ENTRIES, MAX_DEPTH, MAX_FILE, MAX_TEXT = 500, 160, 1000, 6, 524288, 393216
+flags_d = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+flags_f = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+parts = root.split("/")[1:]
+fd = os.open("/", flags_d)
+try:
+    for part in parts:
+        child = os.open(part, flags_d, dir_fd=fd)
+        os.close(fd); fd = child
+except Exception:
+    os.close(fd); raise
+files, skipped_dirs, warnings, limits = [], [], set(), set()
+total = 0
+directories = 0
+stopped = False
+git_present = False
+def add(path, size, status, reason=None, mode=None, data=None):
+    row = {"path": path, "size": size, "status": status, "reason": reason, "mode": mode, "data": None}
+    if data is not None: row["data"] = base64.b64encode(data).decode("ascii")
+    files.append(row)
+def walk(current, rel="", depth=0):
+    global directories, stopped, total, git_present
+    if stopped: return
+    if directories >= MAX_DIRS:
+        limits.add("max_directories"); skipped_dirs.append(rel or "."); return
+    directories += 1
+    names = []
+    try:
+        with os.scandir(current) as stream:
+            for entry in stream:
+                if len(names) >= MAX_ENTRIES:
+                    limits.add("max_directory_entries"); skipped_dirs.append(rel or "."); return
+                names.append(entry.name)
+    except OSError:
+        warnings.add((rel or ".") + ": cannot list directory"); skipped_dirs.append(rel or "."); return
+    for name in sorted(names, key=lambda value: (value.casefold(), value)):
+        if len(files) >= MAX_FILES:
+            limits.add("max_files"); stopped = True; return
+        path = (rel + "/" + name).lstrip("/")
+        try:
+            name.encode("utf-8")
+            info = os.stat(name, dir_fd=current, follow_symlinks=False)
+        except (OSError, UnicodeError):
+            add(path, None, "skipped", "metadata unavailable"); continue
+        mode = info.st_mode
+        if not rel and name == ".git": git_present = True
+        if stat.S_ISDIR(mode):
+            if name in IGNORE: skipped_dirs.append(path)
+            elif depth >= MAX_DEPTH: limits.add("max_depth"); skipped_dirs.append(path)
+            else:
+                try:
+                    child = os.open(name, flags_d, dir_fd=current)
+                except OSError:
+                    warnings.add(path + ": cannot safely open directory"); skipped_dirs.append(path); continue
+                try: walk(child, path, depth + 1)
+                finally: os.close(child)
+            continue
+        if stat.S_ISLNK(mode): add(path, info.st_size, "skipped", "symlink"); continue
+        if not stat.S_ISREG(mode): add(path, info.st_size, "skipped", "not a regular file"); continue
+        lower = name.lower(); suffix = os.path.splitext(lower)[1]
+        relevant = lower.startswith(("readme", "usage", "install")) or lower in SPECIAL or suffix in TEXT or not suffix
+        if suffix in BINARY or ".so." in lower: add(path, info.st_size, "skipped", "binary/archive/data extension", mode); continue
+        if not relevant: add(path, info.st_size, "metadata_only", "non-target text type", mode); continue
+        if info.st_size > MAX_FILE:
+            limits.add("max_file_size"); add(path, info.st_size, "skipped", "file size limit", mode); continue
+        if info.st_size > MAX_TEXT - total:
+            limits.add("max_total_text_bytes"); add(path, info.st_size, "skipped", "remaining text budget", mode); continue
+        try:
+            handle = os.open(name, flags_f, dir_fd=current)
+            before = os.fstat(handle)
+            if not stat.S_ISREG(before.st_mode) or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns): raise OSError()
+            chunks, count = [], 0
+            while count < before.st_size:
+                chunk = os.read(handle, min(65536, before.st_size - count))
+                if not chunk: break
+                chunks.append(chunk); count += len(chunk)
+            after = os.fstat(handle); os.close(handle)
+            if count != before.st_size or (after.st_size, after.st_mtime_ns, after.st_ctime_ns) != (before.st_size, before.st_mtime_ns, before.st_ctime_ns): raise OSError()
+            data = b"".join(chunks)
+        except OSError:
+            try: os.close(handle)
+            except Exception: pass
+            add(path, info.st_size, "skipped", "changed or unreadable", mode); continue
+        if b"\x00" in data:
+            add(path, len(data), "skipped", "binary content", mode); continue
+        try:
+            text = data.decode("utf-8-sig")
+        except UnicodeError:
+            add(path, len(data), "skipped", "not UTF-8 text", mode); continue
+        if any(ord(c) < 32 and c not in "\n\r\t\f" for c in text):
+            add(path, len(data), "skipped", "binary control bytes", mode); continue
+        total += len(data); add(path, len(data), "read", None, mode, data)
+try: walk(fd)
+finally: os.close(fd)
+for value in sorted(limits): warnings.add("scan limit reached: " + value)
+print(json.dumps({"path": root, "files": files, "skipped_directories": sorted(set(skipped_dirs)), "git_present": git_present, "bytes_read": total, "warnings": sorted(warnings), "limits_reached": sorted(limits)}, ensure_ascii=False, separators=(",", ":")))'''
+
+
 class DesktopSSHUnavailableError(RuntimeError):
     """The configured credential-free desktop SSH transport is unavailable."""
 
 
 class DesktopSSHDirectoryError(RuntimeError):
     """A bounded, user-requested remote directory could not be listed."""
+
+
+class DesktopSSHProjectScanError(RuntimeError):
+    """A bounded, user-authorized remote project scan could not be completed."""
 
 
 def _remote_directory_path(value: str) -> str:
@@ -100,6 +216,72 @@ def _directory_result(raw: bytes, expected_path: str) -> dict[str, object]:
                 raise DesktopSSHDirectoryError("Remote directory response was invalid")
         clean.append(dict(row))
     return {"path": expected_path, "entries": clean, "truncated": data["truncated"]}
+
+
+def _project_scan_result(raw: bytes, expected_path: str) -> dict[str, object]:
+    try:
+        data = json.loads(_decode(raw))
+    except (UnicodeError, json.JSONDecodeError):
+        raise DesktopSSHProjectScanError("Remote project scan response was invalid") from None
+    expected = {
+        "path", "files", "skipped_directories", "git_present", "bytes_read",
+        "warnings", "limits_reached",
+    }
+    if not isinstance(data, dict) or set(data) != expected or data["path"] != expected_path:
+        raise DesktopSSHProjectScanError("Remote project scan response was invalid")
+    if (
+        not isinstance(data["files"], list) or len(data["files"]) > MAX_REMOTE_SCAN_FILES
+        or type(data["bytes_read"]) is not int
+        or not 0 <= data["bytes_read"] <= MAX_REMOTE_SCAN_TEXT_BYTES
+        or type(data["git_present"]) is not bool
+    ):
+        raise DesktopSSHProjectScanError("Remote project scan response exceeded its limits")
+    for field, limit in (("skipped_directories", 256), ("warnings", 256), ("limits_reached", 16)):
+        values = data[field]
+        if not isinstance(values, list) or len(values) > limit or any(
+            not isinstance(value, str) or len(value) > 2048 or not value.isprintable()
+            for value in values
+        ):
+            raise DesktopSSHProjectScanError("Remote project scan response was invalid")
+    total = 0
+    clean = []
+    for row in data["files"]:
+        if not isinstance(row, dict) or set(row) != {"path", "size", "status", "reason", "mode", "data"}:
+            raise DesktopSSHProjectScanError("Remote project scan response was invalid")
+        relative = row["path"]
+        path = PurePosixPath(relative) if isinstance(relative, str) else None
+        if (
+            path is None or path.is_absolute() or str(path) != relative or ".." in path.parts
+            or not relative or len(relative) > 2048 or not relative.isprintable()
+            or row["status"] not in {"read", "skipped", "metadata_only"}
+        ):
+            raise DesktopSSHProjectScanError("Remote project scan response was invalid")
+        for field in ("size", "mode"):
+            value = row[field]
+            if value is not None and (type(value) is not int or value < 0):
+                raise DesktopSSHProjectScanError("Remote project scan response was invalid")
+        reason = row["reason"]
+        if reason is not None and (not isinstance(reason, str) or len(reason) > 256 or not reason.isprintable()):
+            raise DesktopSSHProjectScanError("Remote project scan response was invalid")
+        encoded = row["data"]
+        if row["status"] == "read":
+            if not isinstance(encoded, str):
+                raise DesktopSSHProjectScanError("Remote project scan response was invalid")
+            try:
+                content = base64.b64decode(encoded, validate=True)
+            except ValueError:
+                raise DesktopSSHProjectScanError("Remote project scan response was invalid") from None
+            if len(content) != row["size"]:
+                raise DesktopSSHProjectScanError("Remote project scan response was invalid")
+            total += len(content)
+        elif encoded is not None:
+            raise DesktopSSHProjectScanError("Remote project scan response was invalid")
+        else:
+            content = None
+        clean.append({**row, "data": content})
+    if total != data["bytes_read"] or total > MAX_REMOTE_SCAN_TEXT_BYTES:
+        raise DesktopSSHProjectScanError("Remote project scan response was invalid")
+    return {**data, "files": clean}
 
 
 def _decode(data: bytes) -> str:
@@ -283,3 +465,25 @@ class DesktopSSHSlurmRunner:
         if completed.returncode != 0:
             raise DesktopSSHDirectoryError("Remote directory is unavailable or is not a regular directory")
         return _directory_result(stdout, path)
+
+    def scan_project(self, path: str, *, timeout: float = 30) -> dict[str, object]:
+        """Read a bounded text snapshot of one UI-selected remote directory."""
+        _validate_timeout(timeout)
+        path = _remote_directory_path(path)
+        command = ("python3", "-c", _PROJECT_SCAN_SCRIPT, path)
+        try:
+            completed = self._process_run(
+                list(self._ssh_argv(command)), input=None, capture_output=True,
+                timeout=timeout, check=False, env=sanitized_environment(os.environ),
+            )
+        except subprocess.TimeoutExpired:
+            raise DesktopSSHProjectScanError("Remote project scan timed out") from None
+        except OSError:
+            raise DesktopSSHProjectScanError("System OpenSSH could not be started") from None
+        stdout = completed.stdout if isinstance(completed.stdout, bytes) else str(completed.stdout or "").encode()
+        stderr = completed.stderr if isinstance(completed.stderr, bytes) else str(completed.stderr or "").encode()
+        if len(stdout) > MAX_COMMAND_OUTPUT_BYTES or len(stderr) > MAX_COMMAND_OUTPUT_BYTES:
+            raise DesktopSSHProjectScanError("Remote project scan response exceeded the size limit")
+        if completed.returncode != 0:
+            raise DesktopSSHProjectScanError("Remote project is unavailable or cannot be scanned safely")
+        return _project_scan_result(stdout, path)

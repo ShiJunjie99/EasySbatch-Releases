@@ -1,5 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
+import base64
+import json
 
 import pytest
 
@@ -7,6 +9,7 @@ from sbatch_agent.cluster import QUERIES
 from sbatch_agent.cluster_profile import ClusterProfile
 from sbatch_agent.desktop_ssh import DesktopSSHSlurmRunner
 from sbatch_agent.desktop_ssh import DesktopSSHDirectoryError
+from sbatch_agent.desktop_ssh import _PROJECT_SCAN_SCRIPT
 
 
 def runner(tmp_path, calls):
@@ -104,3 +107,46 @@ def test_remote_directory_browser_rejects_untrusted_response(tmp_path):
     transport = runner(tmp_path, calls)
     with pytest.raises(DesktopSSHDirectoryError, match="invalid"):
         transport.list_directory("/home/student")
+
+
+def test_remote_project_scan_is_fixed_bounded_and_decodes_text_snapshot(tmp_path):
+    compile(_PROJECT_SCAN_SCRIPT, "<remote-project-scan>", "exec")
+    calls = []
+    executable = tmp_path / "ssh"
+    executable.write_text("synthetic", encoding="utf-8")
+    content = b"python train.py\n"
+    payload = {
+        "path": "/home/student/project",
+        "files": [{
+            "path": "run.sbatch", "size": len(content), "status": "read",
+            "reason": None, "mode": 0o100644,
+            "data": base64.b64encode(content).decode("ascii"),
+        }],
+        "skipped_directories": [], "git_present": False,
+        "bytes_read": len(content), "warnings": [], "limits_reached": [],
+    }
+
+    def process_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(
+            returncode=0, stdout=json.dumps(payload).encode("utf-8"), stderr=b"",
+        )
+
+    transport = DesktopSSHSlurmRunner(
+        profile=ClusterProfile("test", "Test cluster", "cluster.example.edu", 2222),
+        username="student", ssh_executable=str(executable), process_run=process_run,
+    )
+    result = transport.scan_project("/home/student/project")
+    assert result["files"][0]["data"] == content
+    argv, kwargs = calls[0]
+    assert argv[-1].startswith("python3 -c ")
+    assert argv[-1].endswith(" /home/student/project")
+    assert kwargs["input"] is None
+
+
+def test_remote_project_scan_rejects_path_traversal_before_ssh(tmp_path):
+    calls = []
+    transport = runner(tmp_path, calls)
+    with pytest.raises(ValueError, match="remote directory"):
+        transport.scan_project("/home/student/../root")
+    assert calls == []

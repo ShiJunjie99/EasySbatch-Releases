@@ -61,7 +61,10 @@ def test_product_ui_owns_history_cluster_and_explicit_submission():
     assert "保存到任务记录" in client
     assert "服务器项目目录" in client
     assert "使用集群默认值" in client
-    assert "自动推荐并采用资源" in client
+    assert "推荐分区与节点布局" in client
+    assert "查找内存/时限依据" in client
+    assert "只读扫描" in client
+    assert "智能草稿" in client
     assert "集群资源" in client
     assert "window.confirm" in client
     assert "submitJob(job.id, job.id)" in client
@@ -70,12 +73,17 @@ def test_product_ui_owns_history_cluster_and_explicit_submission():
     assert "@Remote('createJob')" in host
     assert "@Remote('listCatalog')" in host
     assert "@Remote('browseRemoteDirectory')" in host
+    assert "@Remote('scanRemoteProject')" in host
+    assert "@Remote('recommendResourceValues')" in host
+    assert "@Remote('finalizePreparation')" in host
     assert "选择当前目录" in client
     assert "easysbatch_recommend_job" in tool
+    assert "easysbatch_recommend_resource_values" in tool
     assert "easysbatch_list_profiles" in tool
     assert "easysbatch_list_catalog" in tool
     assert "easysbatch_prepare_job" in tool
-    assert "review_sha256" in tool
+    assert "easysbatch_revise_preparation" in tool
+    assert "start_preparation" in tool
     assert "callCore('review_job'" in tool
     assert "consider_all_partitions" in tool
     assert "name: 'easysbatch_submit_job'" not in tool

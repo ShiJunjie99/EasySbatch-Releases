@@ -18,29 +18,35 @@ renderer, immutable task store, and single-attempt Slurm lifecycle.
 The desktop Beta exposes these model tools:
 
 - report capabilities;
-- scan the currently selected workspace read-only;
+- read the active project evidence: a selected local workspace, or a remote
+  project that the user explicitly bound from the New task panel;
 - read an aggregate cluster snapshot;
 - read the automatically selected server software/environment catalog;
 - compare visible eligible partitions and recommend a registered resource shape;
 - validate a strict `JobSpec`;
 - render an sbatch script preview from the automatically selected profile set
   and issue a digest tied to that exact preview;
-- save a resolved job as a local, reviewable task draft.
+- create and revise a persistent preparation with optimistic revision control.
 
-The model cannot submit a job. Submission is available only in the **Task
-history** panel after the user opens the exact saved script and confirms the
-specific record. The product panels also provide manual task creation, complete
-task detail, cluster overview, bounded remote-directory selection, and manual
-status refresh. They do not expose Shell, arbitrary filesystem mutation, Web
+The model cannot finalize or submit a job. A preparation must first reach
+`READY_TO_SAVE`, then the user reviews and saves its exact script in **Smart
+drafts**. Submission is available only in **Task history** after a second,
+record-specific confirmation. The product panels also provide manual task
+creation, complete task detail, cluster overview, bounded remote-directory
+selection, read-only remote project scanning, evidence-based memory/walltime
+choices, and manual status refresh. They do not expose Shell, arbitrary filesystem mutation, Web
 search, skills, todos, goals, workflows, or subagents. DSH telemetry,
 third-party desktop plugins, and automatic updates are disabled.
 
 Cluster access uses the operating system's OpenSSH executable in batch mode.
 Only the fixed `sinfo`, `squeue`, `scontrol`, `sacct`, and `sbatch --parsable`
 forms already used by the Web version are allowed for job operations. The
-user-driven task form has a separate fixed, read-only directory-listing call;
-it returns at most 500 names and metadata items, never file contents, and is
-not available to the model. The application never reads
+user-driven task form has separate fixed, read-only directory-listing and
+project-scanning calls. Listing returns at most 500 names and metadata items.
+Scanning reads at most 384 KiB of relevant UTF-8 project text, skips links,
+binaries, generated directories, and oversized files, and saves only bounded
+evidence in the local product state. Only the user can select the remote path;
+the model can read the active evidence but cannot supply another path. The application never reads
 or stores a password or private key; host verification, keys, and ssh-agent
 remain under OpenSSH. The reviewed script is sent to `sbatch` over standard
 input, so a local application path is never interpreted as a remote path.
@@ -74,8 +80,8 @@ On first start, select a local project directory. The app stores its own DSH
 state under the platform-specific Electron user-data directory, isolated from
 a normal DSH installation. The local directory is used for bounded analysis
 and file preview; `JobSpec.project_dir` and `work_dir` remain explicit POSIX
-paths on the cluster. Beta does not silently upload or assume that local files
-already exist remotely.
+paths on the cluster. Beta never uploads local files or writes project content
+to the cluster.
 
 Open **Cluster resources** and enter the cluster display name, host, SSH port,
 and Linux username. This writes non-secret metadata to `harness/cluster.json`;
@@ -93,8 +99,9 @@ original verification status. For any other host, Beta creates a no-command
 modules, Conda paths, or installed software. In both cases,
 partitions, nodes, CPU/GPU capacity, and queue state are read live from Slurm;
 they are not copied from a static template. Task history is stored separately
-in `harness/jobs.sqlite3`, and immutable submission scripts are staged below
-`harness/runs/`.
+in `harness/jobs.sqlite3`; remote scan evidence and revisioned preparations are
+stored in `harness/desktop-state.sqlite3`; immutable submission scripts are
+staged below `harness/runs/`.
 
 Expected checks:
 
@@ -102,21 +109,24 @@ Expected checks:
    fish branding, and no browser opens.
 2. The left navigation is compact, the chat is narrower, and the **Project
    files** window opens on the right. Drag its blue divider to resize it.
-3. The left navigation contains **New task**, **Task history**, and **Cluster
-   resources**. New task supports software/environment selection, explicit or
-   cluster-default memory and walltime, live resource recommendation, remote
-   directory selection, script preview, and local draft saving.
+3. The left navigation contains **New task**, **Smart drafts**, **Task history**,
+   and **Cluster resources**. New task supports software/environment selection,
+   explicit, cluster-default, or evidence-backed memory and walltime, live
+   partition/layout recommendation, remote directory selection and bounded
+   read-only project scanning, script preview, and local draft saving.
 4. With no `cluster.json`, the UI says the cluster is not configured and keeps
    the submit button disabled. Saving a valid connection automatically selects
    the known shared preset or the safe `cluster-default` fallback.
-5. Project scanning and the Project files window cannot choose a path outside
-   the selected workspace.
+5. The model cannot choose a remote path. After the user scans a server project,
+   the assistant receives only that active bounded evidence. Saving a smart
+   draft re-scans the same path and refuses stale source fingerprints.
 6. Asking the model to run Shell, edit a file, browse the Web, or submit a job
    produces no matching tool call.
 7. A valid JobSpec can be validated, recommended from a fresh cluster snapshot,
-   rendered, and saved as a draft. Saving requires the digest returned for the
-   unchanged preview; editing any field invalidates it. The exact script and
-   complete JobSpec/evidence appear in Task history.
+   and stored as a revisioned smart draft. Unresolved fields remain visible as
+   `NEEDS_INPUT`; a corrected revision becomes `READY_TO_SAVE`. Only the user
+   can move it into Task history, after a fresh project-fingerprint check. The
+   manual form separately requires the digest returned for an unchanged preview.
 8. Submission requires a record-specific confirmation dialog. A submitted task
    shows its Slurm job ID, manual status refresh, and declared/resolved log
    paths. As in the Web version, Beta does not read log contents.
