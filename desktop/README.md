@@ -53,7 +53,7 @@ build; the checkout must be clean and its `HEAD` must equal the pinned commit.
 
 ## Build installers
 
-Install the repository and PyInstaller first, and use pnpm 11.7.0 with Node 26.
+Install the repository and PyInstaller first, and use pnpm 11.7.0 with Node 24.18.0.
 Each target must be built natively on the matching operating system:
 
 ```powershell

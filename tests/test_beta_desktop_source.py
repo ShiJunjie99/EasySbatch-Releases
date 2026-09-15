@@ -54,7 +54,9 @@ def test_desktop_patch_skips_seed_signing_only_for_unsigned_beta_builds():
 
 def test_desktop_ci_matches_dsh_primary_node_runtime():
     workflow = (ROOT / ".github/workflows/build-beta-desktop.yml").read_text(encoding="utf-8")
+    readme = (ROOT / "desktop/README.md").read_text(encoding="utf-8")
     assert 'NODE_VERSION: "24.18.0"' in workflow
+    assert "Node 24.18.0" in readme
     assert "actions/setup-node@v6" in workflow
     assert "pnpm/action-setup@v6" in workflow
 
