@@ -73,7 +73,11 @@ def test_desktop_patch_uses_workspace_first_easysbatch_layout():
     assert "handle[data-side='rightbar']::after" in patch
     assert "'type.label': '项目文件'" in patch
     assert "'hero.headline': '告诉我你要运行什么'" in patch
-    assert "conversation.hero.brand.mark" in patch
+    product = (
+        ROOT
+        / "desktop/dsh-overlay/packages/easysbatch/dsh-product/src/client/index.tsx"
+    ).read_text(encoding="utf-8")
+    assert "conversation.hero.brand.mark" in product
 
 
 def test_desktop_patch_skips_seed_signing_only_for_unsigned_beta_builds():

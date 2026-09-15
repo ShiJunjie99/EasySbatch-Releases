@@ -383,36 +383,6 @@ index 73da078..d52f28d 100644
        macOSSigning = resolveMacOSSigningEnvironment(process.env)
        const signing = await signMacOSSeedStore(
          STORE_ROOT,
-diff --git a/packages/client/ui-brand-official/src/client/index.ts b/packages/client/ui-brand-official/src/client/index.ts
-index 332a5f6..29dd485 100644
---- a/packages/client/ui-brand-official/src/client/index.ts
-+++ b/packages/client/ui-brand-official/src/client/index.ts
-@@ -1,4 +1,4 @@
--/** Official DeepSeek Harness occupants for the generic browser-brand slots. */
-+/** Beta EasySbatch occupants for the generic browser-brand slots. */
- import type { Context as ClientContext } from '@deepseek-ai/cordis'
- import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
- import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
-@@ -8,9 +8,8 @@ import { OfficialBrandMark, OfficialBrandName } from './Brand.tsx'
- export const inject = ['slots']
-
- /**
-- * Fill the sidebar brand slots as one declaration-aware registration set. The
-- * conversation hero stays on its declaring package's animated fish fallback,
-- * so the official build registers nothing there.
-+ * Fill the sidebar and empty-workspace hero brand slots as one
-+ * declaration-aware registration set.
-  * @param ctx - Client root context.
-  */
- export function apply(ctx: ClientContext): void {
-@@ -19,5 +18,7 @@ export function apply(ctx: ClientContext): void {
-     ctx.slots.inject('sidebar.brand.name', function* () {
-       yield ctx.slots.register({ name: 'sidebar.brand.mark' }, OfficialBrandMark)
-       yield ctx.slots.register({ name: 'sidebar.brand.name' }, OfficialBrandName)
-+      yield ctx.slots.inject('conversation.hero.brand.mark', () =>
-+        ctx.slots.register({ name: 'conversation.hero.brand.mark' }, OfficialBrandMark))
-     }))
- }
 diff --git a/packages/client/ui-conversation/src/client/locales.ts b/packages/client/ui-conversation/src/client/locales.ts
 index 4aeb755..c30301a 100644
 --- a/packages/client/ui-conversation/src/client/locales.ts

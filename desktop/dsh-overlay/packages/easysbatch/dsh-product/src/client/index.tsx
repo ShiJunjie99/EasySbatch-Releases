@@ -2,8 +2,10 @@
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
+import type { HeroBrandMarkOwnerProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client'
-import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+import type { SidebarPanelIconOwnerProps } from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import easySbatchRemote from '@deepseek-ai/dsh-easysbatch-product/remote'
 import type {} from '@deepseek-ai/dsh-easysbatch-product/remote'
 import { useCallback, useEffect, useMemo, useState } from 'react'
@@ -80,9 +82,9 @@ function runtimeOf(value: unknown): RuntimeView {
     clusterConfigured: row.cluster_configured === true,
     profilesConfigured: row.profiles_configured === true,
     submissionEnabled: row.submission_enabled === true,
-    clusterLabel: cluster === undefined
-      ? undefined
-      : `${string(cluster.display_name, '计算集群')} · ${string(cluster.username)}`,
+    ...(cluster === undefined ? {} : {
+      clusterLabel: `${string(cluster.display_name, '计算集群')} · ${string(cluster.username)}`,
+    }),
   }
 }
 
@@ -136,10 +138,6 @@ function clusterOf(value: unknown): ClusterView {
   }
 }
 
-function message(reason: unknown): string {
-  return reason instanceof Error ? reason.message : '操作失败，请稍后重试。'
-}
-
 function date(value: string): string {
   const parsed = new Date(value)
   return Number.isNaN(parsed.valueOf()) ? value : parsed.toLocaleString('zh-CN', { hour12: false })
@@ -177,6 +175,15 @@ function Icon({ kind, size, active }: { kind: 'jobs' | 'cluster'; size: number; 
       <path d="M7 7h.01M7 17h.01M11 7h6M11 17h6" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
     </svg>
   )
+}
+
+function BetaMark({ size, className }: HeroBrandMarkOwnerProps) {
+  return <span className={className} style={{
+    alignItems: 'center', background: 'linear-gradient(145deg, #2563eb, #0f766e)',
+    borderRadius: Math.max(6, Math.round(size * 0.28)), color: '#fff', display: 'inline-flex',
+    fontSize: Math.round(size * 0.72), fontWeight: 800, height: size, justifyContent: 'center',
+    lineHeight: 1, width: size,
+  }}>β</span>
 }
 
 function Metric({ label, value }: { label: string; value: string | number | null }) {
@@ -426,11 +433,14 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: JOBS_PANEL }, () => <JobsPanel ctx={ctx} />)),
     ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
       name: 'sidebar.panellist', id: JOBS_PANEL, order: 10, label: '任务记录',
-    }, ({ size, active }: PropsRuntime<'sidebar.panellist'>) => <Icon kind="jobs" size={size} active={active} />)),
+    }, ({ size, active }: SidebarPanelIconOwnerProps) => <Icon kind="jobs" size={size} active={active} />)),
     ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: CLUSTER_PANEL }, () => <ClusterPanel ctx={ctx} />)),
     ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
       name: 'sidebar.panellist', id: CLUSTER_PANEL, order: 20, label: '集群资源',
-    }, ({ size, active }: PropsRuntime<'sidebar.panellist'>) => <Icon kind="cluster" size={size} active={active} />)),
+    }, ({ size, active }: SidebarPanelIconOwnerProps) => <Icon kind="cluster" size={size} active={active} />)),
+    ctx.slots.inject('conversation.hero.brand.mark', () => ctx.slots.register({
+      name: 'conversation.hero.brand.mark',
+    }, BetaMark)),
   ]
   return async () => {
     for (const dispose of disposers.reverse()) dispose()
