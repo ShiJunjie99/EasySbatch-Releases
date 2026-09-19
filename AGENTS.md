@@ -6,8 +6,7 @@ Agents must never run a full local build, workspace-wide compilation, desktop
 packaging build, or other resource-intensive verification on this computer.
 In particular, do not run DSH `build:official`, `build:lib:host`, workspace-wide
 TypeScript/tsdown builds, Electron installer packaging, PyInstaller packaging,
-or an equivalent all-project build locally. Windows and macOS desktop builds
-must run in GitHub Actions, not on the user's computer.
+or an equivalent all-project build locally.
 
 Local verification is limited to lightweight, narrowly targeted checks such as
 source inspection, `git apply --check`, individual low-cost tests, small syntax
