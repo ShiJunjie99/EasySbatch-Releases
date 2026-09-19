@@ -8,11 +8,9 @@ In particular, do not run DSH `build:official`, `build:lib:host`, workspace-wide
 TypeScript/tsdown builds, Electron installer packaging, PyInstaller packaging,
 or an equivalent all-project build locally.
 
-Local verification is limited to lightweight, narrowly targeted checks such as
-source inspection, `git apply --check`, individual low-cost tests, small syntax
-checks, secret/private-data scans, and checksum verification. If a check begins
-using substantial CPU or memory, stop it immediately. Do not widen a targeted
-check into a full suite or build without moving it to GitHub Actions.
+For this task, agents may run the full Windows x64 desktop build locally,
+including DSH TypeScript builds, PyInstaller packaging, and Electron packaging.
+Do not use real cluster credentials, contact a real cluster, or publish releases.
 
 ## Verification authorization
 
